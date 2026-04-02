@@ -1,0 +1,43 @@
+name: support-triage
+version: "1.0.0"
+description: >
+  Customer Support Ticket Triage — an OpenEnv environment where AI agents
+  learn to classify, prioritise, and respond to real-world support tickets.
+
+author: "Sarang Menon"
+
+tasks:
+  - id: classify
+    difficulty: easy
+    description: "Classify a support ticket into one of 5 categories: billing, technical, account, feature_request, spam."
+    max_steps: 1
+    reward_range: [0.0, 1.0]
+
+  - id: prioritize
+    difficulty: medium
+    description: "Assign a priority level (P1-P4) and route the ticket to the correct support team."
+    max_steps: 1
+    reward_range: [0.0, 1.0]
+
+  - id: respond
+    difficulty: hard
+    description: "Draft a helpful, empathetic reply to the customer using provided knowledge-base articles."
+    max_steps: 1
+    reward_range: [0.0, 1.0]
+
+observation_space:
+  type: object
+  description: "Typed Pydantic observation containing ticket data, task name, and step count."
+
+action_space:
+  type: object
+  description: "Typed Pydantic action containing task name and task-specific action data."
+
+endpoints:
+  reset: POST /reset
+  step:  POST /step
+  state: GET  /state
+
+server:
+  port: 7860
+  framework: fastapi
