@@ -1,6 +1,6 @@
----
+﻿---
 title: Support Triage OpenEnv
-emoji: ??
+emoji: 🎫
 colorFrom: blue
 colorTo: green
 sdk: docker
@@ -11,7 +11,7 @@ tags:
 
 # Support Triage OpenEnv
 
-> **Customer Support Ticket Triage** — an OpenEnv-compliant environment where AI agents learn to classify, prioritise, and respond to real-world support tickets.
+> **Customer Support Ticket Triage** â€” an OpenEnv-compliant environment where AI agents learn to classify, prioritise, and respond to real-world support tickets.
 
 ---
 
@@ -26,24 +26,24 @@ This environment lets you train and evaluate agents on all three stages, using a
 
 ---
 
-## Tasks (Easy → Hard)
+## Tasks (Easy â†’ Hard)
 
 | # | Task ID | Difficulty | Description |
 |---|---------|-----------|-------------|
 | 1 | `classify` | Easy | Classify a ticket into one of 5 categories |
-| 2 | `prioritize` | Medium | Assign P1–P4 priority + route to correct team |
+| 2 | `prioritize` | Medium | Assign P1â€“P4 priority + route to correct team |
 | 3 | `respond` | Hard | Draft a full customer reply using knowledge-base articles |
 
-### Task 1 — `classify`
+### Task 1 â€” `classify`
 
 **Observation:** Ticket (subject, body, customer metadata)  
 **Action:** `{"category": "<billing|technical|account|feature_request|spam>"}`  
 **Grading:**  
-- 1.0 — exact category match  
-- 0.4 — adjacent category (e.g. `billing` ↔ `account`)  
-- 0.0 — wrong category  
+- 1.0 â€” exact category match  
+- 0.4 â€” adjacent category (e.g. `billing` â†” `account`)  
+- 0.0 â€” wrong category  
 
-### Task 2 — `prioritize`
+### Task 2 â€” `prioritize`
 
 **Observation:** Ticket + customer context (plan tier, tenure, sentiment)  
 **Action:** `{"priority": "<P1|P2|P3|P4>", "assigned_team": "<team_name>"}`  
@@ -52,13 +52,13 @@ This environment lets you train and evaluate agents on all three stages, using a
 - Priority: 1.0 (exact), 0.5 (off by 1 level), 0.0 (off by 2+)  
 - Team: 1.0 (correct), 0.0 (wrong)  
 
-### Task 3 — `respond`
+### Task 3 â€” `respond`
 
 **Observation:** Ticket + 3 knowledge-base articles  
 **Action:** `{"response_text": "<full reply>"}`  
-**Grading (4 × 25%):**  
+**Grading (4 Ã— 25%):**  
 1. Issue acknowledged (ticket topic mentioned in reply)  
-2. Solution provided (substantive response, ≥ 80 words = full credit)  
+2. Solution provided (substantive response, â‰¥ 80 words = full credit)  
 3. Empathy/tone (contains at least one empathy phrase)  
 4. Proper closing (professional sign-off present)  
 
@@ -100,10 +100,10 @@ For `respond`, `data` also contains a `knowledge_base` array of articles.
 
 | Property | Value |
 |---|---|
-| Range | 0.0 – 1.0 |
+| Range | 0.0 â€“ 1.0 |
 | Episode type | Single-step |
 | Partial credit | Yes (prioritize off-by-one, adjacent classify, respond rubric) |
-| Deterministic | Yes — same episode_id always produces same ticket and same score |
+| Deterministic | Yes â€” same episode_id always produces same ticket and same score |
 
 ---
 
@@ -144,7 +144,7 @@ pip install -r requirements.txt
 # 2. Start the server
 uvicorn server:app --host 0.0.0.0 --port 7860
 
-# 3. In another terminal — run a quick smoke test
+# 3. In another terminal â€” run a quick smoke test
 curl -X POST http://localhost:7860/reset \
      -H "Content-Type: application/json" \
      -d '{"task": "classify"}'
@@ -210,17 +210,17 @@ Measured with `Qwen/Qwen2.5-72B-Instruct` via HF Inference Router:
 
 ```
 support-triage-env/
-├── models.py         # Pydantic typed models (Observation, Action, Reward, State)
-├── data.py           # 50-ticket corpus + KB articles, deterministic by episode_id
-├── graders.py        # Deterministic graders for all 3 tasks
-├── environment.py    # SupportTriageEnv — reset() / step() / state()
-├── server.py         # FastAPI HTTP server (OpenEnv interface)
-├── inference.py      # Baseline LLM agent script
-├── openenv.yaml      # OpenEnv metadata
-├── requirements.txt
-├── Dockerfile
-└── tests/
-    └── test_env.py   # Unit + integration tests
+â”œâ”€â”€ models.py         # Pydantic typed models (Observation, Action, Reward, State)
+â”œâ”€â”€ data.py           # 50-ticket corpus + KB articles, deterministic by episode_id
+â”œâ”€â”€ graders.py        # Deterministic graders for all 3 tasks
+â”œâ”€â”€ environment.py    # SupportTriageEnv â€” reset() / step() / state()
+â”œâ”€â”€ server.py         # FastAPI HTTP server (OpenEnv interface)
+â”œâ”€â”€ inference.py      # Baseline LLM agent script
+â”œâ”€â”€ openenv.yaml      # OpenEnv metadata
+â”œâ”€â”€ requirements.txt
+â”œâ”€â”€ Dockerfile
+â””â”€â”€ tests/
+    â””â”€â”€ test_env.py   # Unit + integration tests
 ```
 
 ---
@@ -233,3 +233,4 @@ python -m pytest tests/test_env.py -v
 ```
 
 ---
+
