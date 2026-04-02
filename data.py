@@ -11,11 +11,11 @@ from models import Ticket, KBArticle
 
 
 # ─────────────────────────────────────────────
-#  Ticket corpus  (50 tickets, balanced categories)
+#  Ticket corpus
 # ─────────────────────────────────────────────
 
 _TICKETS_RAW = [
-    #Billing
+    # Billing
     ("billing", "P2", "billing_team", "Invoice #4821 shows double charge",
      "Hi, I was charged twice for my March subscription — $49 appeared on my card on March 1 and again on March 3. Please refund the duplicate.", "negative", "pro", 180, 2),
     ("billing", "P3", "billing_team", "How do I update my payment method?",
@@ -78,7 +78,7 @@ _TICKETS_RAW = [
      "All my reports show timestamps in UTC. I need them in IST (UTC+5:30).", "neutral", "free", 45, 0),
     ("account", "P3", "account_team", "Remove a user from the workspace",
      "An employee has left and I need to revoke their access and reassign their tasks.", "neutral", "pro", 300, 1),
-    # Feature Request
+    # Feature Request 
     ("feature_request", "P4", "product_team", "Please add dark mode",
      "It would be great to have a dark mode option for evening use. Many competitors have this.", "positive", "free", 10, 0),
     ("feature_request", "P4", "product_team", "Bulk export all data to Excel",
@@ -99,7 +99,7 @@ _TICKETS_RAW = [
      "Power users like me would love keyboard shortcuts for common actions like creating and archiving.", "positive", "pro", 500, 0),
     ("feature_request", "P4", "product_team", "Two-way email sync",
      "Replies sent from Gmail should automatically be logged in the system.", "neutral", "pro", 300, 2),
-    # Spam
+    # Spam 
     ("spam", "P4", "spam_filter", "Congratulations! You have won $5,000",
      "Click here to claim your prize now! Limited time offer. Enter your card details to verify.", "neutral", "free", 0, 0),
     ("spam", "P4", "spam_filter", "SEO services for your website",
@@ -219,3 +219,47 @@ def get_kb_articles_for_ticket(ticket: Ticket, ground_truth: dict, n: int = 3) -
     selected = relevant[:1] + rng.sample(others, min(n - 1, len(others)))
     rng.shuffle(selected)
     return selected
+
+
+# ─────────────────────────────────────────────
+#  Simulated customer replies (for respond step 2)
+# ─────────────────────────────────────────────
+
+_CUSTOMER_REPLIES: Dict[str, List[str]] = {
+    "billing": [
+        "Yes, I was charged on March 1st and again on March 3rd. The amount was $49 each time. My card ending in 4242.",
+        "The charge appeared on my last statement. I have the invoice number: INV-2024-0892. I would like a full refund.",
+        "I used the promo code SAVE20 during checkout but the discount was not applied. The order total was $99.",
+    ],
+    "technical": [
+        "The error message says 503 Service Unavailable. This started about 2 hours ago and affects all our users.",
+        "I am using Chrome version 120 on Windows 11. The issue started after the last update. Cache cleared already.",
+        "The integration was working fine last week. I have not changed any settings. The webhook URL is correct.",
+    ],
+    "account": [
+        "My email is old@company.com and I need to change it to new@company.com. The save button stays greyed out.",
+        "I have been locked out since this morning. I need urgent access as I have a client meeting in 1 hour.",
+        "I am the account owner and need to transfer ownership to john@company.com before I leave next week.",
+    ],
+    "feature_request": [
+        "We have about 15 team members who would use this feature daily. It would save us around 2 hours per week.",
+        "We are currently exporting data manually page by page which takes a very long time. Bulk export would help.",
+        "Our team is spread across 3 time zones and a mobile app would help us stay on top of tasks on the go.",
+    ],
+    "spam": [
+        "I did not send this message intentionally. My account may have been compromised.",
+        "This was sent by mistake. Please ignore it.",
+        "I am not sure how this was submitted. Please disregard.",
+    ],
+}
+
+
+def simulate_customer_reply(ticket: "Ticket", question: str, ground_truth: dict) -> str:
+    """
+    Simulate a deterministic customer reply to the agent's clarifying question.
+    Uses the ticket category to pick a realistic reply.
+    """
+    category = ground_truth.get("category", "technical")
+    replies = _CUSTOMER_REPLIES.get(category, _CUSTOMER_REPLIES["technical"])
+    rng = random.Random(hash(ticket.ticket_id + question[:10]))
+    return rng.choice(replies)

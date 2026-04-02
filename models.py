@@ -16,10 +16,10 @@ class Ticket(BaseModel):
     ticket_id: str
     subject: str
     body: str
-    customer_plan: str = "free"         
+    customer_plan: str = "free"     
     customer_since_days: int = 0
     previous_tickets: int = 0
-    sentiment: str = "neutral"       
+    sentiment: str = "neutral"     
 
 
 class KBArticle(BaseModel):
@@ -43,7 +43,7 @@ class ClassifyObservation(BaseModel):
 
 
 class ClassifyAction(BaseModel):
-    category: str  
+    category: str   # must be one of valid_categories
 
 
 # ─────────────────────────────────────────────
@@ -60,22 +60,58 @@ class PrioritizeObservation(BaseModel):
 
 
 class PrioritizeAction(BaseModel):
-    priority: str 
+    priority: str   # P1 | P2 | P3 | P4
     assigned_team: str
 
 
 # ─────────────────────────────────────────────
-#  Task 3 — respond
+#  Task 3 — respond  (multi-step, 3 steps)
 # ─────────────────────────────────────────────
+#
+#  Step 1 — clarify:  Agent asks one clarifying question
+#  Step 2 — draft:    Agent drafts a response (customer reply provided)
+#  Step 3 — refine:   Agent refines draft using KB articles
+#
+# Each step has its own observation and action type.
 
-class RespondObservation(BaseModel):
+class RespondStep1Observation(BaseModel):
+    """Step 1: Agent sees ticket, must ask a clarifying question."""
     ticket: Ticket
-    knowledge_base: List[KBArticle]
+    instruction: str = "Ask one clarifying question to better understand the customer's issue."
     task: str = "respond"
+    respond_step: int = 1
 
 
-class RespondAction(BaseModel):
-    response_text: str  
+class RespondStep1Action(BaseModel):
+    clarifying_question: str 
+
+
+class RespondStep2Observation(BaseModel):
+    """Step 2: Agent sees ticket + customer's answer, must draft a response."""
+    ticket: Ticket
+    clarifying_question: str 
+    customer_answer: str       
+    instruction: str = "Draft a helpful response to the customer based on their clarification."
+    task: str = "respond"
+    respond_step: int = 2
+
+
+class RespondStep2Action(BaseModel):
+    draft_response: str 
+
+
+class RespondStep3Observation(BaseModel):
+    """Step 3: Agent sees ticket + draft + KB articles, must produce final response."""
+    ticket: Ticket
+    draft_response: str       
+    knowledge_base: List[KBArticle]
+    instruction: str = "Refine your draft using the knowledge-base articles to produce a final, accurate response."
+    task: str = "respond"
+    respond_step: int = 3
+
+
+class RespondStep3Action(BaseModel):
+    response_text: str 
 
 
 # ─────────────────────────────────────────────
@@ -91,12 +127,12 @@ class Observation(BaseModel):
 
 class Action(BaseModel):
     task: str
-    data: Dict[str, Any]         
+    data: Dict[str, Any]        
 
 
 class Reward(BaseModel):
     value: float = Field(ge=0.0, le=1.0)
-    breakdown: Dict[str, float] = {}  
+    breakdown: Dict[str, float] = {} 
     feedback: str = ""
 
 

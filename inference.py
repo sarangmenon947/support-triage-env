@@ -43,10 +43,10 @@ PING_URL = os.getenv("PING_URL", "http://localhost:7860").rstrip("/")
 BENCHMARK = "support_triage"
 
 TASKS = ["classify", "prioritize", "respond"]
-SUCCESS_THRESHOLD = 0.5      
+SUCCESS_THRESHOLD = 0.5   
 
 # ─────────────────────────────────────────────
-#  Logging helpers
+#  Logging helpers 
 # ─────────────────────────────────────────────
 
 def log_start(task: str, model: str) -> None:
@@ -116,29 +116,40 @@ def build_prioritize_prompt(obs_data: Dict[str, Any]) -> str:
     """).strip()
 
 
-def build_respond_prompt(obs_data: Dict[str, Any]) -> str:
+def build_respond_step1_prompt(obs_data):
     ticket = obs_data.get("ticket", {})
-    kb     = obs_data.get("knowledge_base", [])
-    kb_text = "\n\n".join(
-        f"[{a['article_id']}] {a['title']}\n{a['content']}" for a in kb
+    return (
+        "You are a customer support agent. Read this ticket and ask ONE clarifying question "
+        "to better understand the issue before responding.\n\n"
+        f"Subject: {ticket.get('subject', '')}\n"
+        f"Body: {ticket.get('body', '')}\n\n"
+        "Respond with JSON only: {\"clarifying_question\": \"<your question here>\"}"
     )
-    return textwrap.dedent(f"""
-        You are a customer support agent. Write a helpful, empathetic reply to this ticket.
-        Use the knowledge-base articles below where relevant.
 
-        --- TICKET ---
-        Subject: {ticket.get('subject', '')}
-        Body:    {ticket.get('body', '')}
-        Customer plan:  {ticket.get('customer_plan', 'free')}
-        Sentiment:      {ticket.get('sentiment', 'neutral')}
+def build_respond_step2_prompt(obs_data):
+    ticket   = obs_data.get("ticket", {})
+    question = obs_data.get("clarifying_question", "")
+    answer   = obs_data.get("customer_answer", "")
+    return (
+        "You are a customer support agent. Draft a helpful response based on the clarification.\n\n"
+        f"Ticket: {ticket.get('subject', '')}\n"
+        f"Your question: {question}\n"
+        f"Customer answer: {answer}\n\n"
+        "Write a draft (50-100 words). Respond with JSON only: {\"draft_response\": \"<draft here>\"}"
+    )
 
-        --- KNOWLEDGE BASE ---
-        {kb_text}
-
-        Write a professional support reply (80–150 words).
-        Respond with a JSON object only — no markdown, no extra text:
-        {{"response_text": "<your full reply here>"}}
-    """).strip()
+def build_respond_step3_prompt(obs_data):
+    ticket = obs_data.get("ticket", {})
+    draft  = obs_data.get("draft_response", "")
+    kb     = obs_data.get("knowledge_base", [])
+    kb_text = "\n".join(f"[{a['article_id']}] {a['title']}: {a['content']}" for a in kb)
+    return (
+        "You are a customer support agent. Refine your draft using the KB articles.\n\n"
+        f"Ticket: {ticket.get('subject', '')}\n"
+        f"Draft: {draft}\n\n"
+        f"KB Articles:\n{kb_text}\n\n"
+        "Write a polished final reply (80-150 words). Respond with JSON only: {\"response_text\": \"<final reply>\"}"
+    )
 
 
 def call_llm(client: OpenAI, prompt: str) -> str:
@@ -164,7 +175,6 @@ def parse_json(text: str) -> Dict[str, Any]:
     clean = text.strip()
     if clean.startswith("```"):
         lines = clean.splitlines()
-        # strip opening and closing fence
         inner = [l for l in lines if not l.startswith("```")]
         clean = "\n".join(inner).strip()
     try:
@@ -172,11 +182,15 @@ def parse_json(text: str) -> Dict[str, Any]:
     except json.JSONDecodeError:
         return {}
 
+# ─────────────────────────────────────────────
+#  Run one task episode
+# ─────────────────────────────────────────────
+
 def run_task(client: OpenAI, task: str) -> float:
-    """Run a single episode of the given task. Returns episode score."""
+    """Run a single episode. For respond: 3 steps. Others: 1 step."""
     log_start(task=task, model=MODEL_NAME)
 
-    rewards: List[float] = []
+    rewards = []
     steps_taken = 0
     score = 0.0
     success = False
@@ -184,43 +198,75 @@ def run_task(client: OpenAI, task: str) -> float:
 
     try:
         obs = server_reset(task)
-        obs_data = obs.get("data", {})
 
-        if task == "classify":
-            prompt = build_classify_prompt(obs_data)
-        elif task == "prioritize":
-            prompt = build_prioritize_prompt(obs_data)
+        if task in ("classify", "prioritize"):
+            obs_data = obs.get("data", {})
+            if task == "classify":
+                prompt = build_classify_prompt(obs_data)
+            else:
+                prompt = build_prioritize_prompt(obs_data)
+
+            raw = call_llm(client, prompt)
+            action_data = parse_json(raw)
+            if not action_data:
+                error_msg = "JSON parse failed"
+                action_data = {}
+
+            result = server_step(task, action_data)
+            reward = float(result.get("reward", 0.0))
+            done   = bool(result.get("done", True))
+            rewards.append(reward)
+            steps_taken = 1
+            score = reward
+            log_step(step=1, action=json.dumps(action_data).replace(" ", ""),
+                     reward=reward, done=done, error=error_msg)
+
         else:
-            prompt = build_respond_prompt(obs_data)
+            done = False
+            step = 0
+            current_obs = obs
 
-        raw_response = call_llm(client, prompt)
-        action_data  = parse_json(raw_response)
+            while not done and step < 3:
+                step += 1
+                obs_data = current_obs.get("data", {})
+                respond_step = obs_data.get("respond_step", step)
 
-        if not action_data:
-            error_msg = "JSON parse failed"
-            action_data = {}
+                if respond_step == 1:
+                    prompt = build_respond_step1_prompt(obs_data)
+                elif respond_step == 2:
+                    prompt = build_respond_step2_prompt(obs_data)
+                else:
+                    prompt = build_respond_step3_prompt(obs_data)
 
-        result = server_step(task, action_data)
-        reward  = float(result.get("reward", 0.0))
-        done    = bool(result.get("done", True))
-        info    = result.get("info", {})
-        error_msg = error_msg  
+                raw = call_llm(client, prompt)
+                action_data = parse_json(raw)
+                if not action_data:
+                    error_msg = "JSON parse failed"
+                    action_data = {}
 
-        rewards.append(reward)
-        steps_taken = 1
-        score = reward
+                result = server_step(task, action_data)
+                reward = float(result.get("reward", 0.0))
+                done   = bool(result.get("done", False))
+                current_obs = result.get("observation", {})
 
-        action_str = json.dumps(action_data).replace(" ", "")
-        log_step(step=1, action=action_str, reward=reward, done=done, error=error_msg)
+                rewards.append(reward)
+                steps_taken = step
+                log_step(step=step, action=json.dumps(action_data).replace(" ", ""),
+                         reward=reward, done=done, error=error_msg)
+                error_msg = None  
+
+            score = sum(rewards)
 
         success = score >= SUCCESS_THRESHOLD
 
     except Exception as e:
         error_msg = str(e)
-        log_step(step=max(steps_taken, 1), action="{}", reward=0.0, done=True, error=error_msg)
+        log_step(step=max(steps_taken, 1), action="{}", reward=0.0,
+                 done=True, error=error_msg)
 
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards if rewards else [0.0])
+        log_end(success=success, steps=steps_taken, score=score,
+                rewards=rewards if rewards else [0.0])
 
     return score
 

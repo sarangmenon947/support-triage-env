@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 
 # ─────────────────────────────────────────────
-#  Category adjacency map
+#  Category adjacency map for partial credit
 # ─────────────────────────────────────────────
 
 _CATEGORY_NEIGHBORS: Dict[str, list] = {
@@ -181,8 +181,8 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 
         if not api_key:
-            return None 
-        
+            return None  
+
         client = OpenAI(base_url=api_base_url, api_key=api_key)
         prompt = _LLM_GRADE_PROMPT.format(
             subject=ticket_subject,
@@ -225,7 +225,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
             },
         }
     except Exception as e:
-        return None
+        return None  
 
 
 def grade_respond(
@@ -267,3 +267,149 @@ def grade(task: str, action_data: Dict[str, Any], ground_truth: Dict[str, Any], 
         return grade_respond(action_data, ground_truth, **kwargs)
     else:
         raise ValueError(f"Unknown task: {task}")
+
+
+# ─────────────────────────────────────────────
+#  Multi-step respond graders
+# ─────────────────────────────────────────────
+
+_QUESTION_INDICATORS = [
+    "?", "what", "when", "where", "which", "who", "how", "could you",
+    "can you", "did you", "have you", "please clarify", "please provide",
+    "could you tell", "would you mind",
+]
+
+_CATEGORY_QUESTION_KEYWORDS: Dict[str, list] = {
+    "billing":         ["charge", "invoice", "payment", "amount", "date", "receipt", "refund"],
+    "technical":       ["error", "message", "browser", "device", "version", "steps", "when"],
+    "account":         ["email", "username", "access", "role", "when", "browser", "device"],
+    "feature_request": ["team", "use case", "how often", "workflow", "currently", "benefit"],
+    "spam":            ["intentional", "account", "verify", "sent", "who"],
+}
+
+
+def grade_clarify(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 1: Did the agent ask a good clarifying question?
+    Max reward: 0.3
+
+    Criteria:
+    - Is it actually a question? (0.15)
+    - Is it relevant to the ticket category? (0.15)
+    """
+    question = str(action_data.get("clarifying_question", "")).lower().strip()
+    category = ground_truth.get("category", "")
+
+    is_question = any(ind in question for ind in _QUESTION_INDICATORS)
+    question_score = 0.15 if is_question else 0.0
+
+    kws = _CATEGORY_QUESTION_KEYWORDS.get(category, [])
+    is_relevant = any(kw in question for kw in kws)
+    relevance_score = 0.15 if is_relevant else 0.0
+
+    total = round(question_score + relevance_score, 2)
+    feedback = f"clarify: is_question={'Y' if is_question else 'N'} relevant={'Y' if is_relevant else 'N'}"
+
+    return {
+        "score": total,
+        "feedback": feedback,
+        "breakdown": {"is_question": question_score, "relevance": relevance_score},
+    }
+
+
+def grade_draft(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+    customer_answer: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 2: Did the agent write a good draft response?
+    Max reward: 0.4
+
+    Criteria:
+    - Addresses the customer answer (0.1)
+    - Contains solution attempt (0.15)
+    - Has empathetic tone (0.15)
+    """
+    draft = str(action_data.get("draft_response", "")).lower().strip()
+    category = ground_truth.get("category", "")
+    words = draft.split()
+
+    answer_words = set(customer_answer.lower().split())
+    draft_words  = set(draft.split())
+    overlap = len(answer_words & draft_words)
+    address_score = 0.1 if overlap >= 3 else (0.05 if overlap >= 1 else 0.0)
+
+    kws = _CATEGORY_KEYWORDS.get(category, [])
+    has_kw = any(kw in draft for kw in kws)
+    has_length = len(words) >= 30
+    solution_score = 0.15 if (has_kw and has_length) else (0.08 if has_length else 0.0)
+
+    empathy_score = 0.1 if any(p in draft for p in _EMPATHY_PHRASES) else 0.0
+
+    total = round(address_score + solution_score + empathy_score, 2)
+    total = min(total, 0.4)
+
+    feedback = f"draft: addresses_reply={'Y' if address_score>0 else 'N'} solution={'Y' if solution_score>0 else 'N'} empathy={'Y' if empathy_score>0 else 'N'}"
+
+    return {
+        "score": total,
+        "feedback": feedback,
+        "breakdown": {
+            "addresses_reply": address_score,
+            "solution_attempt": solution_score,
+            "empathy": empathy_score,
+        },
+    }
+
+
+def grade_refine(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+    draft_response: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 3: Did the agent improve the draft using KB articles?
+    Max reward: 0.3
+
+    Criteria:
+    - Response is longer/better than draft (0.1)
+    - Uses KB-specific information (0.1)
+    - Has proper closing (0.1)
+    """
+    final = str(action_data.get("response_text", "")).lower().strip()
+    draft = draft_response.lower().strip()
+
+    improvement_score = 0.1 if len(final.split()) > len(draft.split()) + 5 else (
+        0.05 if len(final.split()) >= len(draft.split()) else 0.0
+    )
+
+    kb_terms = [
+        "settings", "navigate", "click", "go to", "follow", "steps",
+        "documentation", "refer to", "knowledge base", "article",
+        "instructions", "guide", "process", "procedure",
+    ]
+    kb_score = 0.1 if any(term in final for term in kb_terms) else 0.0
+
+    closing_score = 0.1 if any(p in final for p in _CLOSING_PHRASES) else 0.0
+
+    total = round(improvement_score + kb_score + closing_score, 2)
+    total = min(total, 0.3)
+
+    feedback = f"refine: improved={'Y' if improvement_score>0 else 'N'} kb_used={'Y' if kb_score>0 else 'N'} closing={'Y' if closing_score>0 else 'N'}"
+
+    return {
+        "score": total,
+        "feedback": feedback,
+        "breakdown": {
+            "improvement": improvement_score,
+            "kb_used": kb_score,
+            "closing": closing_score,
+        },
+    }
