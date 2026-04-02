@@ -3,11 +3,15 @@ Inference Script — Support Triage OpenEnv
 ==========================================
 Baseline agent that calls an LLM to solve all three tasks.
 
-Required environment variables:
-    API_BASE_URL   LLM endpoint  (default: https://router.huggingface.co/v1)
-    MODEL_NAME     Model id      (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN       API key
-    PING_URL       OpenEnv server URL (default: http://localhost:7860)
+MANDATORY environment variables:
+    API_BASE_URL      The API endpoint for the LLM.
+    MODEL_NAME        The model identifier to use for inference.
+    HF_TOKEN          Your Hugging Face / API key.
+    LOCAL_IMAGE_NAME  The name of the local Docker image (used with from_docker_image()).
+
+Defaults reflect the active inference setup:
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+    MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 
 Stdout format (strictly followed):
     [START] task=<task> env=support_triage model=<model>
@@ -25,20 +29,24 @@ import requests
 from openai import OpenAI
 
 # ─────────────────────────────────────────────
-#  Config
+#  Config 
 # ─────────────────────────────────────────────
 
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-PING_URL     = os.getenv("PING_URL",     "http://localhost:7860").rstrip("/")
-BENCHMARK    = "support_triage"
+API_BASE_URL     = os.getenv("API_BASE_URL",     "https://router.huggingface.co/v1")
+MODEL_NAME       = os.getenv("MODEL_NAME",       "Qwen/Qwen2.5-72B-Instruct")
+
+HF_TOKEN         = os.getenv("HF_TOKEN")
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
+
+API_KEY  = HF_TOKEN or os.getenv("API_KEY", "")
+PING_URL = os.getenv("PING_URL", "http://localhost:7860").rstrip("/")
+BENCHMARK = "support_triage"
 
 TASKS = ["classify", "prioritize", "respond"]
-SUCCESS_THRESHOLD = 0.5     
+SUCCESS_THRESHOLD = 0.5      
 
 # ─────────────────────────────────────────────
-#  Logging helpers 
+#  Logging helpers
 # ─────────────────────────────────────────────
 
 def log_start(task: str, model: str) -> None:
@@ -196,7 +204,7 @@ def run_task(client: OpenAI, task: str) -> float:
         reward  = float(result.get("reward", 0.0))
         done    = bool(result.get("done", True))
         info    = result.get("info", {})
-        error_msg = error_msg 
+        error_msg = error_msg  
 
         rewards.append(reward)
         steps_taken = 1
