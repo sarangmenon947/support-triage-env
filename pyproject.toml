@@ -1,8 +1,3 @@
-$pyproject = @"
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
-
 [project]
 name = "support-triage-env"
 version = "1.0.0"
@@ -15,8 +10,3 @@ dependencies = [
     "openai==1.40.0",
     "requests==2.32.3",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest"]
-"@
-Set-Content pyproject.toml $pyproject -Encoding UTF8
