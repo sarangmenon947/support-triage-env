@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 
 # ─────────────────────────────────────────────
-#  Category adjacency map for partial credit
+#  Category adjacency map
 # ─────────────────────────────────────────────
 
 _CATEGORY_NEIGHBORS: Dict[str, list] = {
@@ -80,7 +80,6 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
     correct_priority = ground_truth["priority"].upper()
     correct_team     = ground_truth["assigned_team"].lower()
 
-    # Priority score
     pred_rank    = _PRIORITY_RANK.get(pred_priority, 99)
     correct_rank = _PRIORITY_RANK.get(correct_priority, 99)
     diff = abs(pred_rank - correct_rank)
@@ -95,7 +94,6 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
         priority_score = 0.0
         pf = f"Priority wrong. Expected {correct_priority}, got {pred_priority}."
 
-    # Team score
     team_score = 1.0 if pred_team == correct_team else 0.0
     tf = "Team correct." if team_score == 1.0 else f"Wrong team. Expected '{correct_team}', got '{pred_team}'."
 
@@ -109,8 +107,11 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
 
 
 # ─────────────────────────────────────────────
-#  Task 3 — respond  (heuristic rubric)
+#  Task 3 — respond  (LLM-based grader with heuristic fallback)
 # ─────────────────────────────────────────────
+
+import os
+import json as _json
 
 _EMPATHY_PHRASES = [
     "understand", "sorry", "apologise", "apology", "frustrat", "inconvenien",
@@ -130,27 +131,29 @@ _CATEGORY_KEYWORDS: Dict[str, list] = {
     "spam":            ["spam", "flag", "reported", "block", "review"],
 }
 
+_LLM_GRADE_PROMPT = """You are an expert customer support quality analyst.
+Score the following support response on four criteria.
+Each score must be a float between 0.0 and 1.0.
 
-def grade_respond(
-    action_data: Dict[str, Any],
-    ground_truth: Dict[str, Any],
-    ticket_subject: str = "",
-) -> Dict[str, Any]:
-    """
-    Heuristic rubric for the respond task.
-    Four equally-weighted components (25% each):
-      1. Issue acknowledged  — response mentions the ticket topic
-      2. Solution provided   — response is substantive (>50 words)
-      3. Empathy/tone        — contains at least one empathy phrase
-      4. Proper closing      — contains a closing phrase
-    """
-    text = str(action_data.get("response_text", "")).lower()
-    category = ground_truth["category"]
-    words = text.split()
+TICKET SUBJECT: {subject}
+TICKET CATEGORY: {category}
+AGENT RESPONSE: {response}
 
+Score these four criteria:
+1. issue_acknowledged (0.0-1.0): Did the agent clearly identify and address the customer's specific issue?
+2. solution_quality (0.0-1.0): Did the agent provide a helpful, accurate, and actionable solution?
+3. empathy_tone (0.0-1.0): Was the tone empathetic, professional, and customer-friendly?
+4. clarity_brevity (0.0-1.0): Was the response clear, well-structured, and appropriately concise?
+
+Respond with valid JSON only, no markdown:
+{{"issue_acknowledged": 0.0, "solution_quality": 0.0, "empathy_tone": 0.0, "clarity_brevity": 0.0, "reasoning": "brief explanation"}}"""
+
+
+def _heuristic_respond(text: str, category: str) -> Dict[str, Any]:
+    """Fallback heuristic grader used when LLM grader is unavailable."""
+    words = text.lower().split()
     kws = _CATEGORY_KEYWORDS.get(category, [])
-    issue_score = 1.0 if any(kw in text for kw in kws) else 0.0
-
+    issue_score = 1.0 if any(kw in text.lower() for kw in kws) else 0.0
     if len(words) >= 80:
         solution_score = 1.0
     elif len(words) >= 50:
@@ -159,31 +162,96 @@ def grade_respond(
         solution_score = 0.3
     else:
         solution_score = 0.0
-
-    empathy_score = 1.0 if any(p in text for p in _EMPATHY_PHRASES) else 0.0
-
-    closing_score = 1.0 if any(p in text for p in _CLOSING_PHRASES) else 0.0
-
-    total = round(
-        0.25 * issue_score
-        + 0.25 * solution_score
-        + 0.25 * empathy_score
-        + 0.25 * closing_score,
-        2,
-    )
-
-    components = {
-        "issue_acknowledged": issue_score,
-        "solution_provided":  solution_score,
-        "empathy_tone":       empathy_score,
-        "proper_closing":     closing_score,
+    empathy_score = 1.0 if any(p in text.lower() for p in _EMPATHY_PHRASES) else 0.0
+    closing_score = 1.0 if any(p in text.lower() for p in _CLOSING_PHRASES) else 0.0
+    total = round(0.25 * issue_score + 0.25 * solution_score + 0.25 * empathy_score + 0.25 * closing_score, 2)
+    return {
+        "score": total,
+        "feedback": f"heuristic; issue={'✓' if issue_score else '✗'} solution={'✓' if solution_score>=1 else '~'} empathy={'✓' if empathy_score else '✗'} closing={'✓' if closing_score else '✗'}",
+        "breakdown": {"issue_acknowledged": issue_score, "solution_quality": solution_score, "empathy_tone": empathy_score, "clarity_brevity": closing_score},
     }
-    feedback = "; ".join(
-        f"{k}={'✓' if v >= 1.0 else ('~' if v > 0 else '✗')}"
-        for k, v in components.items()
-    )
 
-    return {"score": total, "feedback": feedback, "breakdown": components}
+
+def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict[str, Any]:
+    """LLM-based grader — calls the same API used by inference.py."""
+    try:
+        from openai import OpenAI
+        api_key      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+        api_base_url = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+        model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+
+        if not api_key:
+            return None 
+        
+        client = OpenAI(base_url=api_base_url, api_key=api_key)
+        prompt = _LLM_GRADE_PROMPT.format(
+            subject=ticket_subject,
+            category=category,
+            response=response_text,
+        )
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are a support quality analyst. Always respond with valid JSON only."},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        raw = (completion.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
+        scores = _json.loads(raw)
+
+        issue    = float(scores.get("issue_acknowledged", 0.0))
+        solution = float(scores.get("solution_quality",   0.0))
+        empathy  = float(scores.get("empathy_tone",       0.0))
+        clarity  = float(scores.get("clarity_brevity",    0.0))
+        reasoning = scores.get("reasoning", "")
+
+        issue, solution, empathy, clarity = (
+            max(0.0, min(1.0, v)) for v in (issue, solution, empathy, clarity)
+        )
+        total = round(0.25 * issue + 0.25 * solution + 0.25 * empathy + 0.25 * clarity, 2)
+
+        return {
+            "score": total,
+            "feedback": f"llm_graded; {reasoning}",
+            "breakdown": {
+                "issue_acknowledged": issue,
+                "solution_quality":   solution,
+                "empathy_tone":       empathy,
+                "clarity_brevity":    clarity,
+            },
+        }
+    except Exception as e:
+        return None
+
+
+def grade_respond(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+) -> Dict[str, Any]:
+    """
+    LLM-based rubric grader for the respond task.
+    Uses an LLM to score four criteria (25% each):
+      1. Issue acknowledged  — agent identified the customer's problem
+      2. Solution quality    — helpful and actionable solution provided
+      3. Empathy/tone        — professional and empathetic tone
+      4. Clarity/brevity     — clear, well-structured, concise response
+
+    Falls back to heuristic grader if LLM is unavailable.
+    """
+    response_text = str(action_data.get("response_text", ""))
+    category      = ground_truth["category"]
+
+    result = _llm_respond(response_text, category, ticket_subject)
+
+    if result is None:
+        result = _heuristic_respond(response_text, category)
+
+    return result
 
 
 # ─────────────────────────────────────────────
