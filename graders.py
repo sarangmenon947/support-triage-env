@@ -181,7 +181,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 
         if not api_key:
-            return None  
+            return None \
 
         client = OpenAI(base_url=api_base_url, api_key=api_key)
         prompt = _LLM_GRADE_PROMPT.format(
@@ -199,6 +199,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
             max_tokens=256,
         )
         raw = (completion.choices[0].message.content or "").strip()
+
         if raw.startswith("```"):
             raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
         scores = _json.loads(raw)
@@ -279,7 +280,7 @@ _QUESTION_INDICATORS = [
     "could you tell", "would you mind",
 ]
 
-_CATEGORY_QUESTION_KEYWORDS: Dict[str, list] = {
+_CATEGORY_QUESTION_KEYWORDS: dict = {
     "billing":         ["charge", "invoice", "payment", "amount", "date", "receipt", "refund"],
     "technical":       ["error", "message", "browser", "device", "version", "steps", "when"],
     "account":         ["email", "username", "access", "role", "when", "browser", "device"],
@@ -396,7 +397,6 @@ def grade_refine(
         "instructions", "guide", "process", "procedure",
     ]
     kb_score = 0.1 if any(term in final for term in kb_terms) else 0.0
-
     closing_score = 0.1 if any(p in final for p in _CLOSING_PHRASES) else 0.0
 
     total = round(improvement_score + kb_score + closing_score, 2)

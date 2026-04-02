@@ -5,13 +5,13 @@ Seeded by episode_id so reset() always returns the same ticket for the same seed
 
 import hashlib
 import random
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from models import Ticket, KBArticle
 
 
 # ─────────────────────────────────────────────
-#  Ticket corpus
+#  Ticket corpus  
 # ─────────────────────────────────────────────
 
 _TICKETS_RAW = [
@@ -57,7 +57,7 @@ _TICKETS_RAW = [
      "Our webhooks are failing with timeout errors after exactly 5 seconds. Payload is only 2KB.", "neutral", "pro", 250, 2),
     ("technical", "P4", "tech_support", "Search results seem slow",
      "The search bar takes about 3-4 seconds to return results. It used to be instant.", "neutral", "free", 30, 0),
-    # Account
+    # Account (10)
     ("account", "P2", "account_team", "Cannot change email address",
      "I've been trying to update my email to my new company domain but the Save button stays greyed out.", "negative", "pro", 150, 1),
     ("account", "P3", "account_team", "How to add team members?",
@@ -78,7 +78,7 @@ _TICKETS_RAW = [
      "All my reports show timestamps in UTC. I need them in IST (UTC+5:30).", "neutral", "free", 45, 0),
     ("account", "P3", "account_team", "Remove a user from the workspace",
      "An employee has left and I need to revoke their access and reassign their tasks.", "neutral", "pro", 300, 1),
-    # Feature Request 
+    # Feature Request
     ("feature_request", "P4", "product_team", "Please add dark mode",
      "It would be great to have a dark mode option for evening use. Many competitors have this.", "positive", "free", 10, 0),
     ("feature_request", "P4", "product_team", "Bulk export all data to Excel",
@@ -99,7 +99,7 @@ _TICKETS_RAW = [
      "Power users like me would love keyboard shortcuts for common actions like creating and archiving.", "positive", "pro", 500, 0),
     ("feature_request", "P4", "product_team", "Two-way email sync",
      "Replies sent from Gmail should automatically be logged in the system.", "neutral", "pro", 300, 2),
-    # Spam 
+    # Spam
     ("spam", "P4", "spam_filter", "Congratulations! You have won $5,000",
      "Click here to claim your prize now! Limited time offer. Enter your card details to verify.", "neutral", "free", 0, 0),
     ("spam", "P4", "spam_filter", "SEO services for your website",
@@ -225,7 +225,7 @@ def get_kb_articles_for_ticket(ticket: Ticket, ground_truth: dict, n: int = 3) -
 #  Simulated customer replies (for respond step 2)
 # ─────────────────────────────────────────────
 
-_CUSTOMER_REPLIES: Dict[str, List[str]] = {
+_CUSTOMER_REPLIES: dict = {
     "billing": [
         "Yes, I was charged on March 1st and again on March 3rd. The amount was $49 each time. My card ending in 4242.",
         "The charge appeared on my last statement. I have the invoice number: INV-2024-0892. I would like a full refund.",
