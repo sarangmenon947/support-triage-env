@@ -1,0 +1,22 @@
+$pyproject = @"
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "support-triage-env"
+version = "1.0.0"
+description = "Customer Support Ticket Triage - OpenEnv Environment"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "pydantic==2.8.2",
+    "openai==1.40.0",
+    "requests==2.32.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+"@
+Set-Content pyproject.toml $pyproject -Encoding UTF8
