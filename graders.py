@@ -1,6 +1,15 @@
 """
-Graders for all three tasks.
-All graders are deterministic and return a float in [0.0, 1.0].
+Graders for all 5 tasks in Support Triage OpenEnv.
+
+All graders are deterministic and return a score in [0.0, 1.0].
+All support partial credit — no binary pass/fail.
+
+Weighting rationale:
+  classify:        1.0 exact, 0.4 adjacent (billing/account are genuinely similar)
+  prioritize:      60% priority (harder, more consequential) + 40% team routing
+  escalate:        50% decision + 30% level + 20% reason (auditable)
+  sentiment_route: 40% team + 40% urgency + 20% de-escalation note
+  respond:         LLM-as-judge across 3 steps (clarify 0.3, draft 0.4, refine 0.3)
 """
 
 from typing import Dict, Any
@@ -80,6 +89,7 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
     correct_priority = ground_truth["priority"].upper()
     correct_team     = ground_truth["assigned_team"].lower()
 
+    # Priority score
     pred_rank    = _PRIORITY_RANK.get(pred_priority, 99)
     correct_rank = _PRIORITY_RANK.get(correct_priority, 99)
     diff = abs(pred_rank - correct_rank)
@@ -94,9 +104,12 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
         priority_score = 0.0
         pf = f"Priority wrong. Expected {correct_priority}, got {pred_priority}."
 
+    # Team score
     team_score = 1.0 if pred_team == correct_team else 0.0
     tf = "Team correct." if team_score == 1.0 else f"Wrong team. Expected '{correct_team}', got '{pred_team}'."
 
+    # 60% priority: urgency judgment is harder and more consequential than routing
+    # 40% team routing: can often be inferred mechanically from category
     total = round(0.6 * priority_score + 0.4 * team_score, 2)
 
     return {
@@ -181,7 +194,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 
         if not api_key:
-            return None  
+            return None  # no key available, fall back to heuristic
 
         client = OpenAI(base_url=api_base_url, api_key=api_key)
         prompt = _LLM_GRADE_PROMPT.format(
@@ -199,6 +212,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
             max_tokens=256,
         )
         raw = (completion.choices[0].message.content or "").strip()
+        # strip markdown fences if present
         if raw.startswith("```"):
             raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
         scores = _json.loads(raw)
@@ -209,6 +223,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         clarity  = float(scores.get("clarity_brevity",    0.0))
         reasoning = scores.get("reasoning", "")
 
+        # clamp all to [0,1]
         issue, solution, empathy, clarity = (
             max(0.0, min(1.0, v)) for v in (issue, solution, empathy, clarity)
         )
@@ -225,7 +240,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
             },
         }
     except Exception as e:
-        return None  
+        return None  # fall back to heuristic on any error
 
 
 def grade_respond(
@@ -246,8 +261,10 @@ def grade_respond(
     response_text = str(action_data.get("response_text", ""))
     category      = ground_truth["category"]
 
+    # Try LLM grader first
     result = _llm_respond(response_text, category, ticket_subject)
 
+    # Fall back to heuristic if LLM unavailable
     if result is None:
         result = _heuristic_respond(response_text, category)
 
@@ -304,9 +321,11 @@ def grade_clarify(
     question = str(action_data.get("clarifying_question", "")).lower().strip()
     category = ground_truth.get("category", "")
 
+    # Is it a question?
     is_question = any(ind in question for ind in _QUESTION_INDICATORS)
     question_score = 0.15 if is_question else 0.0
 
+    # Is it relevant?
     kws = _CATEGORY_QUESTION_KEYWORDS.get(category, [])
     is_relevant = any(kw in question for kw in kws)
     relevance_score = 0.15 if is_relevant else 0.0
@@ -340,19 +359,23 @@ def grade_draft(
     category = ground_truth.get("category", "")
     words = draft.split()
 
+    # Addresses customer answer
     answer_words = set(customer_answer.lower().split())
     draft_words  = set(draft.split())
     overlap = len(answer_words & draft_words)
     address_score = 0.1 if overlap >= 3 else (0.05 if overlap >= 1 else 0.0)
 
+    # Solution attempt (length + category keywords)
     kws = _CATEGORY_KEYWORDS.get(category, [])
     has_kw = any(kw in draft for kw in kws)
     has_length = len(words) >= 30
     solution_score = 0.15 if (has_kw and has_length) else (0.08 if has_length else 0.0)
 
+    # Empathy
     empathy_score = 0.1 if any(p in draft for p in _EMPATHY_PHRASES) else 0.0
 
     total = round(address_score + solution_score + empathy_score, 2)
+    # cap at 0.4
     total = min(total, 0.4)
 
     feedback = f"draft: addresses_reply={'Y' if address_score>0 else 'N'} solution={'Y' if solution_score>0 else 'N'} empathy={'Y' if empathy_score>0 else 'N'}"
@@ -386,17 +409,20 @@ def grade_refine(
     final = str(action_data.get("response_text", "")).lower().strip()
     draft = draft_response.lower().strip()
 
+    # Improvement over draft
     improvement_score = 0.1 if len(final.split()) > len(draft.split()) + 5 else (
         0.05 if len(final.split()) >= len(draft.split()) else 0.0
     )
 
+    # KB-specific keywords (step names, article-specific terms)
     kb_terms = [
         "settings", "navigate", "click", "go to", "follow", "steps",
         "documentation", "refer to", "knowledge base", "article",
         "instructions", "guide", "process", "procedure",
     ]
-
     kb_score = 0.1 if any(term in final for term in kb_terms) else 0.0
+
+    # Proper closing
     closing_score = 0.1 if any(p in final for p in _CLOSING_PHRASES) else 0.0
 
     total = round(improvement_score + kb_score + closing_score, 2)
@@ -439,12 +465,13 @@ def grade_escalate(
     correct_escalate = ground_truth.get("should_escalate", False)
     correct_level    = ground_truth.get("escalation_level", "none").lower()
 
+    # Decision score (50%)
     decision_score = 0.5 if pred_escalate == correct_escalate else 0.0
 
+    # Level score (30%)
     pred_rank    = _ESCALATION_RANK.get(pred_level, 0)
     correct_rank = _ESCALATION_RANK.get(correct_level, 0)
     diff = abs(pred_rank - correct_rank)
-    
     if diff == 0:
         level_score = 0.3
     elif diff == 1:
@@ -452,6 +479,7 @@ def grade_escalate(
     else:
         level_score = 0.0
 
+    # Reason score (20%)
     reason_score = 0.2 if len(pred_reason) >= 10 else (0.1 if pred_reason else 0.0)
 
     total = round(decision_score + level_score + reason_score, 2)
@@ -493,8 +521,10 @@ def grade_sentiment_route(
     correct_team    = ground_truth.get("assigned_team", "").lower()
     correct_urgency = ground_truth.get("urgency_flag", "normal").lower()
 
+    # Team score (40%)
     team_score = 0.4 if pred_team == correct_team else 0.0
 
+    # Urgency score (40%)
     _urgency_rank = {"low": 0, "normal": 1, "high": 2, "critical": 3}
     pred_rank    = _urgency_rank.get(pred_urgency, 1)
     correct_rank = _urgency_rank.get(correct_urgency, 1)
@@ -506,6 +536,7 @@ def grade_sentiment_route(
     else:
         urgency_score = 0.0
 
+    # De-escalation note (20%)
     note_score = 0.2 if len(pred_note) >= 15 else (0.1 if pred_note else 0.0)
 
     total = round(team_score + urgency_score + note_score, 2)
