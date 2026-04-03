@@ -6,9 +6,9 @@ Tasks:
   classify   — single-step: classify ticket into category
   prioritize — single-step: assign priority + route to team
   respond    — multi-step (3 steps):
-                 Step 1: ask a clarifying question   (reward 0.0-0.3)
-                 Step 2: draft a response            (reward 0.0-0.4)
-                 Step 3: refine using KB articles    (reward 0.0-0.3)
+                 Step 1: ask a clarifying question   (reward 0.0–0.3)
+                 Step 2: draft a response            (reward 0.0–0.4)
+                 Step 3: refine using KB articles    (reward 0.0–0.3)
                Total max reward = 1.0
 """
 
@@ -16,14 +16,18 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from models import Observation, Action, StepResult, State
-from data import get_ticket_for_episode, get_kb_articles_for_ticket, simulate_customer_reply
-from graders import grade, grade_clarify, grade_draft, grade_refine
+from data import (get_ticket_for_episode, get_kb_articles_for_ticket,
+                  simulate_customer_reply, get_escalate_ground_truth,
+                  get_sentiment_route_ground_truth, _CONVERSATION_HISTORIES)
+from graders import grade, grade_clarify, grade_draft, grade_refine, grade_escalate, grade_sentiment_route
 
 
 _MAX_STEPS = {
-    "classify":   1,
-    "prioritize": 1,
-    "respond":    3,
+    "classify":        1,
+    "prioritize":      1,
+    "respond":         3,
+    "escalate":        1,
+    "sentiment_route": 1,
 }
 
 
@@ -39,7 +43,7 @@ class SupportTriageEnv:
     Max reward per episode = 1.0 for all tasks.
     """
 
-    VALID_TASKS = ["classify", "prioritize", "respond"]
+    VALID_TASKS = ["classify", "prioritize", "respond", "escalate", "sentiment_route"]
 
     def __init__(self, task: str = "classify"):
         if task not in self.VALID_TASKS:
@@ -82,12 +86,38 @@ class SupportTriageEnv:
             from models import PrioritizeObservation
             obs_data = PrioritizeObservation(ticket=self._ticket).model_dump()
 
-        else:
+        elif self.task == "respond":
             from models import RespondStep1Observation
             obs_data = RespondStep1Observation(ticket=self._ticket).model_dump()
             self._kb_articles = get_kb_articles_for_ticket(
                 self._ticket, self._ground_truth
             )
+
+        elif self.task == "escalate":
+            from models import EscalateObservation
+            import random
+            rng = random.Random(hash(self._episode_id))
+            history = rng.choice(_CONVERSATION_HISTORIES)
+            attempts = rng.randint(0, 3)
+            obs_data = EscalateObservation(
+                ticket=self._ticket,
+                conversation_history=history,
+                agent_attempts=attempts,
+            ).model_dump()
+            esc_gt = get_escalate_ground_truth(self._ground_truth)
+            self._ground_truth.update(esc_gt)
+
+        else:  
+            from models import SentimentRouteObservation
+            sr_gt = get_sentiment_route_ground_truth(
+                self._ground_truth, self._ticket.body
+            )
+            self._ground_truth.update(sr_gt)
+            obs_data = SentimentRouteObservation(
+                ticket=self._ticket,
+                sentiment_score=sr_gt["sentiment_score"],
+                keywords_detected=sr_gt["keywords_detected"],
+            ).model_dump()
 
         self._current_obs = Observation(
             task=self.task,
@@ -113,13 +143,18 @@ class SupportTriageEnv:
         ticket_subject = self._ticket.subject if self._ticket else ""
 
         # ── classify / prioritize (single-step) ──────────────────────────
-        if self.task in ("classify", "prioritize"):
-            result = grade(
-                task=self.task,
-                action_data=action.data,
-                ground_truth=self._ground_truth,
-                ticket_subject=ticket_subject,
-            )
+        if self.task in ("classify", "prioritize", "escalate", "sentiment_route"):
+            if self.task == "escalate":
+                result = grade_escalate(action.data, self._ground_truth)
+            elif self.task == "sentiment_route":
+                result = grade_sentiment_route(action.data, self._ground_truth)
+            else:
+                result = grade(
+                    task=self.task,
+                    action_data=action.data,
+                    ground_truth=self._ground_truth,
+                    ticket_subject=ticket_subject,
+                )
             reward_val = float(result["score"])
             self._total_reward = round(self._total_reward + reward_val, 3)
             self._done = True

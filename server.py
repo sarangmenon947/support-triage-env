@@ -96,7 +96,7 @@ def list_tasks():
             {
                 "id": "prioritize",
                 "difficulty": "medium",
-                "description": "Assign a priority (P1-P4) and route the ticket to the correct team.",
+                "description": "Assign a priority (P1–P4) and route the ticket to the correct team.",
                 "valid_priorities": ["P1", "P2", "P3", "P4"],
                 "valid_teams": ["billing_team", "tech_support", "account_team", "product_team", "spam_filter"],
             },

@@ -181,7 +181,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 
         if not api_key:
-            return None \
+            return None  
 
         client = OpenAI(base_url=api_base_url, api_key=api_key)
         prompt = _LLM_GRADE_PROMPT.format(
@@ -199,7 +199,6 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
             max_tokens=256,
         )
         raw = (completion.choices[0].message.content or "").strip()
-
         if raw.startswith("```"):
             raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
         scores = _json.loads(raw)
@@ -396,6 +395,7 @@ def grade_refine(
         "documentation", "refer to", "knowledge base", "article",
         "instructions", "guide", "process", "procedure",
     ]
+
     kb_score = 0.1 if any(term in final for term in kb_terms) else 0.0
     closing_score = 0.1 if any(p in final for p in _CLOSING_PHRASES) else 0.0
 
@@ -411,5 +411,116 @@ def grade_refine(
             "improvement": improvement_score,
             "kb_used": kb_score,
             "closing": closing_score,
+        },
+    }
+
+
+# ─────────────────────────────────────────────
+#  Task 4 — escalate grader
+# ─────────────────────────────────────────────
+
+_ESCALATION_RANK = {"none": 0, "L1": 1, "L2": 2, "L3": 3, "manager": 4}
+
+
+def grade_escalate(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Grade the escalate task.
+    - 50%: correct escalation decision (yes/no)
+    - 30%: correct escalation level (off-by-one = partial)
+    - 20%: reason provided (non-empty)
+    """
+    pred_escalate = bool(action_data.get("should_escalate", False))
+    pred_level    = str(action_data.get("escalation_level", "none")).strip().lower()
+    pred_reason   = str(action_data.get("reason", "")).strip()
+
+    correct_escalate = ground_truth.get("should_escalate", False)
+    correct_level    = ground_truth.get("escalation_level", "none").lower()
+
+    decision_score = 0.5 if pred_escalate == correct_escalate else 0.0
+
+    pred_rank    = _ESCALATION_RANK.get(pred_level, 0)
+    correct_rank = _ESCALATION_RANK.get(correct_level, 0)
+    diff = abs(pred_rank - correct_rank)
+    
+    if diff == 0:
+        level_score = 0.3
+    elif diff == 1:
+        level_score = 0.15
+    else:
+        level_score = 0.0
+
+    reason_score = 0.2 if len(pred_reason) >= 10 else (0.1 if pred_reason else 0.0)
+
+    total = round(decision_score + level_score + reason_score, 2)
+    feedback = (
+        f"escalate: decision={'Y' if decision_score else 'N'} "
+        f"level={'exact' if diff==0 else ('close' if diff==1 else 'wrong')} "
+        f"reason={'Y' if reason_score>=0.2 else 'N'}"
+    )
+
+    return {
+        "score": total,
+        "feedback": feedback,
+        "breakdown": {
+            "decision": decision_score,
+            "level": level_score,
+            "reason": reason_score,
+        },
+    }
+
+
+# ─────────────────────────────────────────────
+#  Task 5 — sentiment_route grader
+# ─────────────────────────────────────────────
+
+def grade_sentiment_route(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Grade the sentiment_route task.
+    - 40%: correct team assignment
+    - 40%: correct urgency flag (off-by-one = partial)
+    - 20%: de-escalation note present and non-trivial
+    """
+    pred_team    = str(action_data.get("assigned_team", "")).strip().lower()
+    pred_urgency = str(action_data.get("urgency_flag", "")).strip().lower()
+    pred_note    = str(action_data.get("de_escalation_note", "")).strip()
+
+    correct_team    = ground_truth.get("assigned_team", "").lower()
+    correct_urgency = ground_truth.get("urgency_flag", "normal").lower()
+
+    team_score = 0.4 if pred_team == correct_team else 0.0
+
+    _urgency_rank = {"low": 0, "normal": 1, "high": 2, "critical": 3}
+    pred_rank    = _urgency_rank.get(pred_urgency, 1)
+    correct_rank = _urgency_rank.get(correct_urgency, 1)
+    diff = abs(pred_rank - correct_rank)
+    if diff == 0:
+        urgency_score = 0.4
+    elif diff == 1:
+        urgency_score = 0.2
+    else:
+        urgency_score = 0.0
+
+    note_score = 0.2 if len(pred_note) >= 15 else (0.1 if pred_note else 0.0)
+
+    total = round(team_score + urgency_score + note_score, 2)
+    feedback = (
+        f"sentiment_route: team={'Y' if team_score else 'N'} "
+        f"urgency={'exact' if diff==0 else ('close' if diff==1 else 'wrong')} "
+        f"note={'Y' if note_score>=0.2 else 'N'}"
+    )
+
+    return {
+        "score": total,
+        "feedback": feedback,
+        "breakdown": {
+            "team": team_score,
+            "urgency": urgency_score,
+            "de_escalation_note": note_score,
         },
     }

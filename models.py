@@ -16,10 +16,10 @@ class Ticket(BaseModel):
     ticket_id: str
     subject: str
     body: str
-    customer_plan: str = "free"     
+    customer_plan: str = "free"        
     customer_since_days: int = 0
     previous_tickets: int = 0
-    sentiment: str = "neutral"     
+    sentiment: str = "neutral"      
 
 
 class KBArticle(BaseModel):
@@ -43,7 +43,7 @@ class ClassifyObservation(BaseModel):
 
 
 class ClassifyAction(BaseModel):
-    category: str   # must be one of valid_categories
+    category: str  
 
 
 # ─────────────────────────────────────────────
@@ -60,7 +60,7 @@ class PrioritizeObservation(BaseModel):
 
 
 class PrioritizeAction(BaseModel):
-    priority: str   # P1 | P2 | P3 | P4
+    priority: str  
     assigned_team: str
 
 
@@ -89,8 +89,8 @@ class RespondStep1Action(BaseModel):
 class RespondStep2Observation(BaseModel):
     """Step 2: Agent sees ticket + customer's answer, must draft a response."""
     ticket: Ticket
-    clarifying_question: str 
-    customer_answer: str       
+    clarifying_question: str
+    customer_answer: str  
     instruction: str = "Draft a helpful response to the customer based on their clarification."
     task: str = "respond"
     respond_step: int = 2
@@ -103,7 +103,7 @@ class RespondStep2Action(BaseModel):
 class RespondStep3Observation(BaseModel):
     """Step 3: Agent sees ticket + draft + KB articles, must produce final response."""
     ticket: Ticket
-    draft_response: str       
+    draft_response: str      
     knowledge_base: List[KBArticle]
     instruction: str = "Refine your draft using the knowledge-base articles to produce a final, accurate response."
     task: str = "respond"
@@ -111,8 +111,52 @@ class RespondStep3Observation(BaseModel):
 
 
 class RespondStep3Action(BaseModel):
-    response_text: str 
+    response_text: str  # The final polished reply
 
+
+
+# ─────────────────────────────────────────────
+#  Task 4 — escalate
+# ─────────────────────────────────────────────
+
+class EscalateObservation(BaseModel):
+    ticket: Ticket
+    conversation_history: List[str] = []   
+    agent_attempts: int = 0              
+    valid_escalation_levels: List[str] = Field(
+        default=["none", "L1", "L2", "L3", "manager"]
+    )
+    task: str = "escalate"
+
+
+class EscalateAction(BaseModel):
+    should_escalate: bool
+    escalation_level: str  
+    reason: str           
+
+
+# ─────────────────────────────────────────────
+#  Task 5 — sentiment_route
+# ─────────────────────────────────────────────
+
+class SentimentRouteObservation(BaseModel):
+    ticket: Ticket
+    sentiment_score: float = 0.0         
+    keywords_detected: List[str] = []    
+    valid_teams: List[str] = Field(
+        default=["billing_team", "tech_support", "account_team",
+                 "product_team", "spam_filter", "vip_support"]
+    )
+    valid_urgency_flags: List[str] = Field(
+        default=["low", "normal", "high", "critical"]
+    )
+    task: str = "sentiment_route"
+
+
+class SentimentRouteAction(BaseModel):
+    assigned_team: str
+    urgency_flag: str         
+    de_escalation_note: str    
 
 # ─────────────────────────────────────────────
 #  Generic wrappers used by the OpenEnv server
@@ -120,19 +164,19 @@ class RespondStep3Action(BaseModel):
 
 class Observation(BaseModel):
     task: str
-    data: Dict[str, Any]         
+    data: Dict[str, Any]        
     step: int = 0
     done: bool = False
 
 
 class Action(BaseModel):
     task: str
-    data: Dict[str, Any]        
+    data: Dict[str, Any]      
 
 
 class Reward(BaseModel):
     value: float = Field(ge=0.0, le=1.0)
-    breakdown: Dict[str, float] = {} 
+    breakdown: Dict[str, float] = {}  
     feedback: str = ""
 
 

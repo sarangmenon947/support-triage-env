@@ -42,11 +42,11 @@ API_KEY  = HF_TOKEN or os.getenv("API_KEY", "")
 PING_URL = os.getenv("PING_URL", "http://localhost:7860").rstrip("/")
 BENCHMARK = "support_triage"
 
-TASKS = ["classify", "prioritize", "respond"]
-SUCCESS_THRESHOLD = 0.5   
+TASKS = ["classify", "prioritize", "escalate", "sentiment_route", "respond"]
+SUCCESS_THRESHOLD = 0.5  
 
 # ─────────────────────────────────────────────
-#  Logging helpers 
+#  Logging helpers  
 # ─────────────────────────────────────────────
 
 def log_start(task: str, model: str) -> None:
@@ -152,6 +152,44 @@ def build_respond_step3_prompt(obs_data):
     )
 
 
+
+def build_escalate_prompt(obs_data: dict) -> str:
+    ticket  = obs_data.get("ticket", {})
+    history = obs_data.get("conversation_history", [])
+    attempts = obs_data.get("agent_attempts", 0)
+    history_text = "\n".join(history) if history else "No prior conversation."
+    return (
+        "You are a support team lead. Decide if this ticket needs escalation.\n\n"
+        f"Subject: {ticket.get('subject', '')}\n"
+        f"Body: {ticket.get('body', '')}\n"
+        f"Customer plan: {ticket.get('customer_plan', 'free')}\n"
+        f"Sentiment: {ticket.get('sentiment', 'neutral')}\n"
+        f"Agent attempts so far: {attempts}\n"
+        f"Conversation history:\n{history_text}\n\n"
+        "Valid escalation levels: none, L1, L2, L3, manager\n\n"
+        "Respond with JSON only:\n"
+        '{"should_escalate": true/false, "escalation_level": "<level>", "reason": "<brief reason>"}'
+    )
+
+
+def build_sentiment_route_prompt(obs_data: dict) -> str:
+    ticket  = obs_data.get("ticket", {})
+    score   = obs_data.get("sentiment_score", 0.0)
+    keywords = obs_data.get("keywords_detected", [])
+    return (
+        "You are a support routing specialist. Route this emotionally charged ticket.\n\n"
+        f"Subject: {ticket.get('subject', '')}\n"
+        f"Body: {ticket.get('body', '')}\n"
+        f"Customer plan: {ticket.get('customer_plan', 'free')}\n"
+        f"Sentiment score: {score} (-1.0=very angry, 0=neutral, 1.0=very positive)\n"
+        f"Anger keywords detected: {', '.join(keywords) if keywords else 'none'}\n\n"
+        "Valid teams: billing_team, tech_support, account_team, product_team, spam_filter, vip_support\n"
+        "Valid urgency flags: low, normal, high, critical\n"
+        "(Use vip_support for angry high-value customers, critical for P1+angry)\n\n"
+        "Respond with JSON only:\n"
+        '{"assigned_team": "<team>", "urgency_flag": "<urgency>", "de_escalation_note": "<brief calming message for customer>"}'
+    )
+
 def call_llm(client: OpenAI, prompt: str) -> str:
     """Call the LLM and return raw response text."""
     try:
@@ -199,12 +237,16 @@ def run_task(client: OpenAI, task: str) -> float:
     try:
         obs = server_reset(task)
 
-        if task in ("classify", "prioritize"):
+        if task in ("classify", "prioritize", "escalate", "sentiment_route"):
             obs_data = obs.get("data", {})
             if task == "classify":
                 prompt = build_classify_prompt(obs_data)
-            else:
+            elif task == "prioritize":
                 prompt = build_prioritize_prompt(obs_data)
+            elif task == "escalate":
+                prompt = build_escalate_prompt(obs_data)
+            else:
+                prompt = build_sentiment_route_prompt(obs_data)
 
             raw = call_llm(client, prompt)
             action_data = parse_json(raw)

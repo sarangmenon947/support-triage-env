@@ -11,7 +11,7 @@ from models import Ticket, KBArticle
 
 
 # ─────────────────────────────────────────────
-#  Ticket corpus  
+#  Ticket corpus 
 # ─────────────────────────────────────────────
 
 _TICKETS_RAW = [
@@ -57,7 +57,7 @@ _TICKETS_RAW = [
      "Our webhooks are failing with timeout errors after exactly 5 seconds. Payload is only 2KB.", "neutral", "pro", 250, 2),
     ("technical", "P4", "tech_support", "Search results seem slow",
      "The search bar takes about 3-4 seconds to return results. It used to be instant.", "neutral", "free", 30, 0),
-    # Account (10)
+    # Account
     ("account", "P2", "account_team", "Cannot change email address",
      "I've been trying to update my email to my new company domain but the Save button stays greyed out.", "negative", "pro", 150, 1),
     ("account", "P3", "account_team", "How to add team members?",
@@ -263,3 +263,88 @@ def simulate_customer_reply(ticket: "Ticket", question: str, ground_truth: dict)
     replies = _CUSTOMER_REPLIES.get(category, _CUSTOMER_REPLIES["technical"])
     rng = random.Random(hash(ticket.ticket_id + question[:10]))
     return rng.choice(replies)
+
+
+# ─────────────────────────────────────────────
+#  Task 4 — escalate data
+# ─────────────────────────────────────────────
+
+_ESCALATION_GROUND_TRUTH = {
+    ("billing",   "P1", "angry"):    (True,  "manager"),
+    ("billing",   "P1", "negative"): (True,  "L2"),
+    ("billing",   "P2", "angry"):    (True,  "L2"),
+    ("billing",   "P2", "negative"): (True,  "L1"),
+    ("billing",   "P3", "neutral"):  (False, "none"),
+    ("billing",   "P4", "positive"): (False, "none"),
+    ("technical", "P1", "angry"):    (True,  "L3"),
+    ("technical", "P1", "negative"): (True,  "L2"),
+    ("technical", "P2", "angry"):    (True,  "L2"),
+    ("technical", "P2", "neutral"):  (True,  "L1"),
+    ("technical", "P3", "neutral"):  (False, "none"),
+    ("technical", "P4", "neutral"):  (False, "none"),
+    ("account",   "P1", "angry"):    (True,  "L3"),
+    ("account",   "P2", "negative"): (True,  "L1"),
+    ("account",   "P3", "neutral"):  (False, "none"),
+    ("feature_request", "P4", "positive"): (False, "none"),
+    ("spam",      "P4", "neutral"):  (False, "none"),
+}
+
+_CONVERSATION_HISTORIES = [
+    ["Agent: How can I help you today?", "Customer: I need this fixed immediately!"],
+    ["Agent: I understand your concern.", "Customer: This is unacceptable, I want a manager."],
+    ["Agent: Let me look into this.", "Customer: I've been waiting for 3 days already."],
+    ["Agent: Thank you for your patience.", "Customer: Okay, please resolve it quickly."],
+    [],
+]
+
+
+def get_escalate_ground_truth(ground_truth: dict) -> dict:
+    """Derive escalation ground truth from ticket ground truth."""
+    key = (
+        ground_truth.get("category", "technical"),
+        ground_truth.get("priority", "P3"),
+        ground_truth.get("sentiment", "neutral") if ground_truth.get("sentiment") in
+            ["angry", "negative", "neutral", "positive"] else "neutral",
+    )
+    # find closest match
+    should_escalate, level = _ESCALATION_GROUND_TRUTH.get(key, (False, "none"))
+    return {"should_escalate": should_escalate, "escalation_level": level}
+
+
+def get_sentiment_score(sentiment: str) -> float:
+    """Convert sentiment label to numeric score."""
+    return {"angry": -1.0, "negative": -0.5, "neutral": 0.0, "positive": 0.8}.get(sentiment, 0.0)
+
+
+_ANGER_KEYWORDS = ["unacceptable", "furious", "outrage", "terrible", "awful",
+                   "immediately", "urgent", "manager", "refund", "fraud", "lawsuit"]
+
+_URGENCY_GROUND_TRUTH = {
+    "P1": "critical", "P2": "high", "P3": "normal", "P4": "low"
+}
+
+
+def get_sentiment_route_ground_truth(ground_truth: dict, ticket_body: str) -> dict:
+    """Derive sentiment routing ground truth."""
+    priority  = ground_truth.get("priority", "P3")
+    sentiment = ground_truth.get("sentiment", "neutral")
+    team      = ground_truth.get("assigned_team", "tech_support")
+
+    urgency = _URGENCY_GROUND_TRUTH.get(priority, "normal")
+    if sentiment == "angry" and urgency == "normal":
+        urgency = "high"
+    if sentiment == "angry" and urgency == "high":
+        urgency = "critical"
+
+    plan = ""  
+    if sentiment in ("angry", "negative") and priority in ("P1", "P2"):
+        team = "vip_support"
+
+    detected = [kw for kw in _ANGER_KEYWORDS if kw in ticket_body.lower()]
+
+    return {
+        "assigned_team": team,
+        "urgency_flag": urgency,
+        "keywords_detected": detected,
+        "sentiment_score": get_sentiment_score(sentiment),
+    }

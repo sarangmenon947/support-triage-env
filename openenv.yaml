@@ -1,42 +1,57 @@
 name: support-triage
-version: "1.0.0"
+version: "2.0.0"
 description: >
   Customer Support Ticket Triage — an OpenEnv environment where AI agents
-  learn to classify, prioritise, and respond to real-world support tickets.
+  learn to classify, prioritise, escalate, sentiment-route, and respond
+  to real-world support tickets across 5 tasks of increasing difficulty.
 
 author: "Sarang Menon"
 
 tasks:
   - id: classify
     difficulty: easy
-    description: "Classify a support ticket into one of 5 categories: billing, technical, account, feature_request, spam."
+    description: "Classify a support ticket into one of 5 categories."
     max_steps: 1
     reward_range: [0.0, 1.0]
 
   - id: prioritize
     difficulty: medium
-    description: "Assign a priority level (P1-P4) and route the ticket to the correct support team."
+    description: "Assign priority (P1-P4) and route ticket to correct team."
+    max_steps: 1
+    reward_range: [0.0, 1.0]
+
+  - id: escalate
+    difficulty: medium
+    description: "Decide if ticket needs escalation, to what level, and why."
+    max_steps: 1
+    reward_range: [0.0, 1.0]
+
+  - id: sentiment_route
+    difficulty: medium
+    description: "Route emotionally charged ticket with correct urgency flag."
     max_steps: 1
     reward_range: [0.0, 1.0]
 
   - id: respond
     difficulty: hard
-    description: "Draft a helpful, empathetic reply to the customer using provided knowledge-base articles."
-    max_steps: 1
+    description: "3-step multi-turn: clarify -> draft -> refine using KB articles."
+    max_steps: 3
     reward_range: [0.0, 1.0]
 
 observation_space:
   type: object
-  description: "Typed Pydantic observation containing ticket data, task name, and step count."
+  description: "Typed Pydantic observation with ticket, task metadata, and step."
 
 action_space:
   type: object
-  description: "Typed Pydantic action containing task name and task-specific action data."
+  description: "Typed Pydantic action with task name and task-specific fields."
 
 endpoints:
   reset: POST /reset
   step:  POST /step
   state: GET  /state
+  tasks: GET  /tasks
+  leaderboard: GET /leaderboard
 
 server:
   port: 7860
