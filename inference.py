@@ -29,24 +29,27 @@ import requests
 from openai import OpenAI
 
 # ─────────────────────────────────────────────
-#  Config 
+#  Config  (matches mandatory checklist)
 # ─────────────────────────────────────────────
 
+# Defaults reflect the active inference setup
 API_BASE_URL     = os.getenv("API_BASE_URL",     "https://router.huggingface.co/v1")
 MODEL_NAME       = os.getenv("MODEL_NAME",       "Qwen/Qwen2.5-72B-Instruct")
 
+# No default — must be supplied at runtime
 HF_TOKEN         = os.getenv("HF_TOKEN")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
+# Use HF_TOKEN as the API key for all LLM calls
 API_KEY  = HF_TOKEN or os.getenv("API_KEY", "")
 PING_URL = os.getenv("PING_URL", "http://localhost:7860").rstrip("/")
 BENCHMARK = "support_triage"
 
 TASKS = ["classify", "prioritize", "escalate", "sentiment_route", "respond"]
-SUCCESS_THRESHOLD = 0.5    
+SUCCESS_THRESHOLD = 0.5      # score >= 0.5 counts as success
 
 # ─────────────────────────────────────────────
-#  Logging helpers
+#  Logging helpers  (exact required format)
 # ─────────────────────────────────────────────
 
 def log_start(task: str, model: str) -> None:
@@ -64,15 +67,29 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 #  Server helpers
 # ─────────────────────────────────────────────
 
-def server_reset(task: str, mode: str = "static") -> Dict[str, Any]:
-    r = requests.post(f"{PING_URL}/reset", json={"task": task, "mode": mode}, timeout=30)
+def server_reset(task: str, mode: str = "static", session_id: str = "default") -> Dict[str, Any]:
+    r = requests.post(f"{PING_URL}/reset", json={"task": task, "mode": mode, "session_id": session_id}, timeout=30)
     r.raise_for_status()
     return r.json()
 
-def server_step(task: str, action_data: Dict[str, Any]) -> Dict[str, Any]:
-    r = requests.post(f"{PING_URL}/step", json={"task": task, "data": action_data}, timeout=60)
+def server_step(task: str, action_data: Dict[str, Any], session_id: str = "default") -> Dict[str, Any]:
+    r = requests.post(f"{PING_URL}/step", json={"task": task, "data": action_data, "session_id": session_id}, timeout=60)
     r.raise_for_status()
     return r.json()
+
+
+def server_tool_call(tool_name: str, tool_args: Dict[str, Any], session_id: str = "default") -> Dict[str, Any]:
+    """Call a tool on the environment server."""
+    try:
+        r = requests.post(
+            f"{PING_URL}/tool",
+            json={"tool_name": tool_name, "tool_args": tool_args, "session_id": session_id},
+            timeout=30
+        )
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"error": str(e)}
 
 # ─────────────────────────────────────────────
 #  Prompt builders
@@ -213,6 +230,7 @@ def parse_json(text: str) -> Dict[str, Any]:
     clean = text.strip()
     if clean.startswith("```"):
         lines = clean.splitlines()
+        # strip opening and closing fence
         inner = [l for l in lines if not l.startswith("```")]
         clean = "\n".join(inner).strip()
     try:
@@ -235,10 +253,12 @@ def run_task(client: OpenAI, task: str) -> float:
     error_msg = None
 
     try:
+        # Use dynamic ticket generation for the respond task to showcase variety
         mode = "dynamic" if task == "respond" else "static"
         obs = server_reset(task, mode=mode)
 
         if task in ("classify", "prioritize", "escalate", "sentiment_route"):
+            # Single-step tasks
             obs_data = obs.get("data", {})
             if task == "classify":
                 prompt = build_classify_prompt(obs_data)
@@ -265,21 +285,60 @@ def run_task(client: OpenAI, task: str) -> float:
                      reward=reward, done=done, error=error_msg)
 
         else:
+            # respond — 3-step episode with tool use
             done = False
             step = 0
             current_obs = obs
+            session_id = f"inference-{task}-{steps_taken}"
 
             while not done and step < 3:
                 step += 1
                 obs_data = current_obs.get("data", {})
                 respond_step = obs_data.get("respond_step", step)
 
+                # Before step 3 (refine), call tools to gather information
+                tool_context = ""
+                if respond_step == 3 or respond_step == 2:
+                    ticket = obs_data.get("ticket", {})
+                    ticket_id = ticket.get("ticket_id", "")
+
+                    # Tool 1: search KB
+                    kb_result = server_tool_call(
+                        "search_kb",
+                        {"query": ticket.get("subject", "")},
+                        session_id=session_id
+                    )
+                    # Tool 2: lookup customer
+                    customer_result = server_tool_call(
+                        "lookup_customer",
+                        {"ticket_id": ticket_id},
+                        session_id=session_id
+                    )
+                    # Tool 3: get similar tickets
+                    similar_result = server_tool_call(
+                        "get_similar_tickets",
+                        {"subject": ticket.get("subject", ""), "category": "technical"},
+                        session_id=session_id
+                    )
+
+                    kb_articles = kb_result.get("results", [])
+                    customer_info = customer_result.get("customer", {})
+                    similar_tickets = similar_result.get("similar_tickets", [])
+
+                    tool_context = (
+                        f"\n\n--- TOOL RESULTS ---\n"
+                        f"KB Articles found: {len(kb_articles)}\n"
+                        + "\n".join(f"[{a.get('id','')}] {a.get('title','')}: {a.get('content','')}" for a in kb_articles[:2])
+                        + f"\nCustomer health: {customer_info.get('account_health', 'unknown')}"
+                        + f"\nSimilar resolved tickets: {len(similar_tickets)}"
+                    )
+
                 if respond_step == 1:
                     prompt = build_respond_step1_prompt(obs_data)
                 elif respond_step == 2:
-                    prompt = build_respond_step2_prompt(obs_data)
+                    prompt = build_respond_step2_prompt(obs_data) + tool_context
                 else:
-                    prompt = build_respond_step3_prompt(obs_data)
+                    prompt = build_respond_step3_prompt(obs_data) + tool_context
 
                 raw = call_llm(client, prompt)
                 action_data = parse_json(raw)
@@ -287,7 +346,7 @@ def run_task(client: OpenAI, task: str) -> float:
                     error_msg = "JSON parse failed"
                     action_data = {}
 
-                result = server_step(task, action_data)
+                result = server_step(task, action_data, session_id=session_id)
                 reward = float(result.get("reward", 0.0))
                 done   = bool(result.get("done", False))
                 current_obs = result.get("observation", {})
@@ -296,7 +355,7 @@ def run_task(client: OpenAI, task: str) -> float:
                 steps_taken = step
                 log_step(step=step, action=json.dumps(action_data).replace(" ", ""),
                          reward=reward, done=done, error=error_msg)
-                error_msg = None  
+                error_msg = None
 
             score = sum(rewards)
 
