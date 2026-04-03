@@ -16,8 +16,8 @@ from tools import TOOL_DEFINITIONS, execute_tool
 
 app = FastAPI(
     title="Support Triage OpenEnv",
-    description="Customer Support Ticket Triage — OpenEnv-compliant environment",
-    version="1.0.0",
+    description="Customer Support Ticket Triage — 5 tasks, tool use, dynamic generation, LLM grader",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -172,4 +172,22 @@ def list_tasks():
                 "available_tools": ["search_kb", "lookup_customer", "check_order_status", "get_similar_tickets"],
             },
         ]
+    }
+
+@app.get("/leaderboard")
+def leaderboard():
+    """Returns task metadata and max scores for benchmarking context."""
+    return {
+        "leaderboard": [
+            {"task": "classify",        "max_possible": 1.0, "difficulty": "easy",   "steps": 1},
+            {"task": "prioritize",      "max_possible": 1.0, "difficulty": "medium", "steps": 1},
+            {"task": "escalate",        "max_possible": 1.0, "difficulty": "medium", "steps": 1},
+            {"task": "sentiment_route", "max_possible": 1.0, "difficulty": "medium", "steps": 1},
+            {"task": "respond",         "max_possible": 1.0, "difficulty": "hard",   "steps": 3},
+        ],
+        "note": "Max reward per episode = 1.0 for all tasks. respond reward is cumulative across 3 steps.",
+        "modes": {
+            "static":  "Deterministic 50-ticket corpus, reproducible by episode_id",
+            "dynamic": "LLM-generated fresh ticket each episode"
+        }
     }

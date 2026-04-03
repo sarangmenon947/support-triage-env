@@ -1,11 +1,15 @@
 name: support-triage
-version: "2.0.0"
+version: "3.0.0"
 description: >
   Customer Support Ticket Triage — an OpenEnv environment where AI agents
   learn to classify, prioritise, escalate, sentiment-route, and respond
   to real-world support tickets across 5 tasks of increasing difficulty.
+  Features LLM-as-judge grading, dynamic ticket generation, external tool
+  use (search_kb, lookup_customer, check_order_status, get_similar_tickets),
+  and concurrent session support.
 
 author: "Sarang Menon"
+license: MIT
 
 tasks:
   - id: classify
@@ -28,31 +32,44 @@ tasks:
 
   - id: sentiment_route
     difficulty: medium
-    description: "Route emotionally charged ticket with correct urgency flag."
+    description: "Route emotionally charged ticket with correct urgency flag and de-escalation note."
     max_steps: 1
     reward_range: [0.0, 1.0]
 
   - id: respond
     difficulty: hard
-    description: "3-step multi-turn: clarify -> draft -> refine using KB articles."
+    description: "3-step multi-turn: clarify -> draft -> refine using KB articles and external tools."
     max_steps: 3
     reward_range: [0.0, 1.0]
+    tools_available:
+      - search_kb
+      - lookup_customer
+      - check_order_status
+      - get_similar_tickets
 
 observation_space:
   type: object
-  description: "Typed Pydantic observation with ticket, task metadata, and step."
+  description: "Typed Pydantic observation with ticket, task metadata, step count, and available tools."
 
 action_space:
   type: object
   description: "Typed Pydantic action with task name and task-specific fields."
 
+episode_modes:
+  static: "Deterministic 50-ticket corpus, reproducible by episode_id"
+  dynamic: "LLM-generated fresh ticket each episode for infinite variety"
+
 endpoints:
-  reset: POST /reset
-  step:  POST /step
-  state: GET  /state
-  tasks: GET  /tasks
-  leaderboard: GET /leaderboard
+  reset:       POST /reset
+  step:        POST /step
+  state:       GET  /state
+  tool:        POST /tool
+  tools:       GET  /tools
+  tasks:       GET  /tasks
+  leaderboard: GET  /leaderboard
+  health:      GET  /health
 
 server:
   port: 7860
   framework: fastapi
+  concurrent_sessions: true

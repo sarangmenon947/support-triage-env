@@ -1,15 +1,21 @@
 """
 SupportTriageEnv — OpenEnv-compliant environment.
-Implements reset() / step() / state() for the three support triage tasks.
+Implements reset() / step() / state() for all 5 support triage tasks.
 
 Tasks:
-  classify   — single-step: classify ticket into category
-  prioritize — single-step: assign priority + route to team
-  respond    — multi-step (3 steps):
-                 Step 1: ask a clarifying question   (reward 0.0–0.3)
-                 Step 2: draft a response            (reward 0.0–0.4)
-                 Step 3: refine using KB articles    (reward 0.0–0.3)
-               Total max reward = 1.0
+  classify        — single-step: classify ticket into 1 of 5 categories
+  prioritize      — single-step: assign P1-P4 priority + route to team
+  escalate        — single-step: decide escalation level and reason
+  sentiment_route — single-step: route by emotional urgency
+  respond         — multi-step (3 steps):
+                      Step 1: clarifying question  (reward 0.0-0.3)
+                      Step 2: draft response       (reward 0.0-0.4)
+                      Step 3: refine with KB+tools (reward 0.0-0.3)
+                    Total max reward = 1.0 across all steps
+
+Modes:
+  static  — deterministic corpus of 50 tickets, reproducible by episode_id
+  dynamic — LLM generates fresh ticket each episode (infinite variety)
 """
 
 import uuid
@@ -36,12 +42,15 @@ class SupportTriageEnv:
     """
     Customer Support Ticket Triage environment.
 
-    Three tasks (easy → hard):
-      classify    — single-step: identify ticket category
-      prioritize  — single-step: assign priority + route to correct team
-      respond     — multi-step (3 steps): clarify -> draft -> refine
+    Five tasks (easy → hard):
+      classify        — single-step: identify ticket category
+      prioritize      — single-step: assign priority + route to team
+      escalate        — single-step: decide escalation level and reason
+      sentiment_route — single-step: route by emotional urgency
+      respond         — multi-step (3 steps): clarify -> draft -> refine
 
     Max reward per episode = 1.0 for all tasks.
+    Supports static (deterministic) and dynamic (LLM-generated) ticket modes.
     """
 
     VALID_TASKS = ["classify", "prioritize", "respond", "escalate", "sentiment_route"]
@@ -50,7 +59,7 @@ class SupportTriageEnv:
         if task not in self.VALID_TASKS:
             raise ValueError(f"task must be one of {self.VALID_TASKS}")
         self.task = task
-        self.mode = mode  
+        self.mode = mode  # "static" or "dynamic"
         self._episode_id: Optional[str] = None
         self._ground_truth: Optional[Dict[str, Any]] = None
         self._current_obs: Optional[Observation] = None
@@ -59,6 +68,7 @@ class SupportTriageEnv:
         self._done: bool = False
         self._history: List[Dict[str, Any]] = []
 
+        # respond multi-step state
         self._ticket = None
         self._kb_articles = None
         self._clarifying_question: str = ""
@@ -111,11 +121,11 @@ class SupportTriageEnv:
                 conversation_history=history,
                 agent_attempts=attempts,
             ).model_dump()
-
+            # extend ground truth with escalation answer
             esc_gt = get_escalate_ground_truth(self._ground_truth)
             self._ground_truth.update(esc_gt)
 
-        else:  
+        else:  # sentiment_route
             from models import SentimentRouteObservation
             sr_gt = get_sentiment_route_ground_truth(
                 self._ground_truth, self._ticket.body
@@ -139,8 +149,12 @@ class SupportTriageEnv:
         """
         Process one action. Returns (observation, reward, done, info).
 
-        classify / prioritize: single-step, done=True immediately.
-        respond: 3 steps, done=True after step 3.
+        Single-step tasks (done=True after step 1):
+          classify, prioritize, escalate, sentiment_route
+
+        Multi-step tasks:
+          respond — 3 steps, done=True after step 3
+                    cumulative reward across all steps, max = 1.0
         """
         if self._done:
             raise RuntimeError("Episode is done. Call reset() to start a new episode.")
@@ -177,6 +191,7 @@ class SupportTriageEnv:
         # ── respond (multi-step) ─────────────────────────────────────────
         else:
             if self._step_count == 1:
+                # Step 1 — clarifying question
                 self._clarifying_question = action.data.get("clarifying_question", "")
                 result = grade_clarify(
                     action_data=action.data,
@@ -185,6 +200,7 @@ class SupportTriageEnv:
                 )
                 reward_val = float(result["score"])
 
+                # Simulate customer reply
                 self._customer_answer = simulate_customer_reply(
                     self._ticket, self._clarifying_question, self._ground_truth
                 )
@@ -198,6 +214,7 @@ class SupportTriageEnv:
                 done = False
 
             elif self._step_count == 2:
+                # Step 2 — draft response
                 self._draft_response = action.data.get("draft_response", "")
                 result = grade_draft(
                     action_data=action.data,
@@ -216,6 +233,7 @@ class SupportTriageEnv:
                 done = False
 
             else:
+                # Step 3 — refine using KB
                 result = grade_refine(
                     action_data=action.data,
                     ground_truth=self._ground_truth,
