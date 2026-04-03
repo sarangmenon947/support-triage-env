@@ -1,6 +1,6 @@
 ﻿---
 title: Support Triage OpenEnv
-emoji: robot
+emoji: 🎫
 colorFrom: blue
 colorTo: green
 sdk: docker
