@@ -18,7 +18,8 @@ from typing import Any, Dict, List, Optional
 from models import Observation, Action, StepResult, State
 from data import (get_ticket_for_episode, get_kb_articles_for_ticket,
                   simulate_customer_reply, get_escalate_ground_truth,
-                  get_sentiment_route_ground_truth, _CONVERSATION_HISTORIES)
+                  get_sentiment_route_ground_truth, _CONVERSATION_HISTORIES,
+                  generate_ticket_dynamically)
 from graders import grade, grade_clarify, grade_draft, grade_refine, grade_escalate, grade_sentiment_route
 
 
@@ -45,10 +46,11 @@ class SupportTriageEnv:
 
     VALID_TASKS = ["classify", "prioritize", "respond", "escalate", "sentiment_route"]
 
-    def __init__(self, task: str = "classify"):
+    def __init__(self, task: str = "classify", mode: str = "static"):
         if task not in self.VALID_TASKS:
             raise ValueError(f"task must be one of {self.VALID_TASKS}")
         self.task = task
+        self.mode = mode  
         self._episode_id: Optional[str] = None
         self._ground_truth: Optional[Dict[str, Any]] = None
         self._current_obs: Optional[Observation] = None
@@ -74,9 +76,14 @@ class SupportTriageEnv:
         self._customer_answer = ""
         self._draft_response = ""
 
-        self._ticket, self._ground_truth = get_ticket_for_episode(
-            self._episode_id, self.task
-        )
+        if self.mode == "dynamic":
+            self._ticket, self._ground_truth = generate_ticket_dynamically(
+                self._episode_id
+            )
+        else:
+            self._ticket, self._ground_truth = get_ticket_for_episode(
+                self._episode_id, self.task
+            )
 
         if self.task == "classify":
             from models import ClassifyObservation
@@ -104,6 +111,7 @@ class SupportTriageEnv:
                 conversation_history=history,
                 agent_attempts=attempts,
             ).model_dump()
+
             esc_gt = get_escalate_ground_truth(self._ground_truth)
             self._ground_truth.update(esc_gt)
 

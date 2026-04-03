@@ -11,7 +11,7 @@ from models import Ticket, KBArticle
 
 
 # ─────────────────────────────────────────────
-#  Ticket corpus 
+#  Tickets
 # ─────────────────────────────────────────────
 
 _TICKETS_RAW = [
@@ -306,7 +306,7 @@ def get_escalate_ground_truth(ground_truth: dict) -> dict:
         ground_truth.get("sentiment", "neutral") if ground_truth.get("sentiment") in
             ["angry", "negative", "neutral", "positive"] else "neutral",
     )
-    # find closest match
+
     should_escalate, level = _ESCALATION_GROUND_TRUTH.get(key, (False, "none"))
     return {"should_escalate": should_escalate, "escalation_level": level}
 
@@ -336,7 +336,7 @@ def get_sentiment_route_ground_truth(ground_truth: dict, ticket_body: str) -> di
     if sentiment == "angry" and urgency == "high":
         urgency = "critical"
 
-    plan = ""  
+    plan = "" 
     if sentiment in ("angry", "negative") and priority in ("P1", "P2"):
         team = "vip_support"
 
@@ -348,3 +348,98 @@ def get_sentiment_route_ground_truth(ground_truth: dict, ticket_body: str) -> di
         "keywords_detected": detected,
         "sentiment_score": get_sentiment_score(sentiment),
     }
+
+
+# ─────────────────────────────────────────────
+#  Dynamic ticket generation (LLM-powered)
+# ─────────────────────────────────────────────
+
+_DYNAMIC_SYSTEM_PROMPT = """You are a synthetic data generator for a customer support training environment.
+Generate a realistic customer support ticket. Be creative and vary the scenarios.
+Always respond with valid JSON only — no markdown, no extra text."""
+
+_DYNAMIC_USER_PROMPT = """Generate a realistic customer support ticket for a SaaS software company.
+
+Choose one category: billing, technical, account, feature_request, spam
+Choose one priority: P1 (critical), P2 (high), P3 (medium), P4 (low)
+Choose one sentiment: angry, negative, neutral, positive
+Choose one plan: free, starter, pro, enterprise
+
+Rules:
+- P1 tickets must be angry or negative sentiment
+- spam tickets must be free plan, P4 priority, neutral sentiment
+- enterprise customers rarely have free plan issues
+- Make the subject and body realistic and specific
+
+Respond with JSON only:
+{
+  "subject": "<realistic subject line>",
+  "body": "<realistic ticket body, 2-4 sentences>",
+  "category": "<category>",
+  "priority": "<P1|P2|P3|P4>",
+  "sentiment": "<angry|negative|neutral|positive>",
+  "customer_plan": "<free|starter|pro|enterprise>",
+  "customer_since_days": <number 0-1000>,
+  "previous_tickets": <number 0-10>,
+  "assigned_team": "<billing_team|tech_support|account_team|product_team|spam_filter>"
+}"""
+
+
+def generate_ticket_dynamically(episode_id: str) -> tuple:
+    """
+    Generate a fresh ticket using an LLM.
+    Falls back to static corpus if LLM is unavailable.
+    Returns (Ticket, ground_truth) same as get_ticket_for_episode().
+    """
+    import os
+    import json
+
+    api_key      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+    api_base_url = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+    model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+
+    if not api_key:
+        return get_ticket_for_episode(episode_id)
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(base_url=api_base_url, api_key=api_key)
+
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": _DYNAMIC_SYSTEM_PROMPT},
+                {"role": "user",   "content": _DYNAMIC_USER_PROMPT},
+            ],
+            temperature=0.9, 
+            max_tokens=400,
+            stream=False,
+        )
+
+        raw = (completion.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
+
+        data = json.loads(raw)
+
+        ticket = Ticket(
+            ticket_id=f"TKT-DYN-{episode_id[:6].upper()}",
+            subject=str(data.get("subject", "Support request")),
+            body=str(data.get("body", "Please help.")),
+            customer_plan=str(data.get("customer_plan", "free")),
+            customer_since_days=int(data.get("customer_since_days", 0)),
+            previous_tickets=int(data.get("previous_tickets", 0)),
+            sentiment=str(data.get("sentiment", "neutral")),
+        )
+
+        ground_truth = {
+            "category":      str(data.get("category",      "technical")),
+            "priority":      str(data.get("priority",      "P3")),
+            "assigned_team": str(data.get("assigned_team", "tech_support")),
+            "sentiment":     str(data.get("sentiment",     "neutral")),
+        }
+
+        return ticket, ground_truth
+
+    except Exception:
+        return get_ticket_for_episode(episode_id)

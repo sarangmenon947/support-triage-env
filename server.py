@@ -35,6 +35,7 @@ _env: Optional[SupportTriageEnv] = None
 class ResetRequest(BaseModel):
     task: str = "classify"
     episode_id: Optional[str] = None
+    mode: str = "static" 
 
 
 class StepRequest(BaseModel):
@@ -55,7 +56,7 @@ def health():
 def reset(req: ResetRequest = ResetRequest()) -> Dict[str, Any]:
     global _env
     try:
-        _env = SupportTriageEnv(task=req.task)
+        _env = SupportTriageEnv(task=req.task, mode=req.mode)
         obs = _env.reset(episode_id=req.episode_id)
         return obs.model_dump()
     except ValueError as e:

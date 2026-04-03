@@ -43,10 +43,10 @@ PING_URL = os.getenv("PING_URL", "http://localhost:7860").rstrip("/")
 BENCHMARK = "support_triage"
 
 TASKS = ["classify", "prioritize", "escalate", "sentiment_route", "respond"]
-SUCCESS_THRESHOLD = 0.5  
+SUCCESS_THRESHOLD = 0.5    
 
 # ─────────────────────────────────────────────
-#  Logging helpers  
+#  Logging helpers
 # ─────────────────────────────────────────────
 
 def log_start(task: str, model: str) -> None:
@@ -64,8 +64,8 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 #  Server helpers
 # ─────────────────────────────────────────────
 
-def server_reset(task: str) -> Dict[str, Any]:
-    r = requests.post(f"{PING_URL}/reset", json={"task": task}, timeout=30)
+def server_reset(task: str, mode: str = "static") -> Dict[str, Any]:
+    r = requests.post(f"{PING_URL}/reset", json={"task": task, "mode": mode}, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -235,7 +235,8 @@ def run_task(client: OpenAI, task: str) -> float:
     error_msg = None
 
     try:
-        obs = server_reset(task)
+        mode = "dynamic" if task == "respond" else "static"
+        obs = server_reset(task, mode=mode)
 
         if task in ("classify", "prioritize", "escalate", "sentiment_route"):
             obs_data = obs.get("data", {})
