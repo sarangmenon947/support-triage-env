@@ -1,5 +1,5 @@
 """
-Deterministic synthetic data for all three tasks.
+Deterministic synthetic data for all five tasks.
 Seeded by episode_id so reset() always returns the same ticket for the same seed.
 """
 
