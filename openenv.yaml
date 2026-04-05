@@ -9,7 +9,6 @@ description: >
   and concurrent session support.
 
 author: "Sarang Menon"
-license: MIT
 
 tasks:
   - id: classify
