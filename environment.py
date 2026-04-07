@@ -26,7 +26,7 @@ from data import (get_ticket_for_episode, get_kb_articles_for_ticket,
                   simulate_customer_reply, get_escalate_ground_truth,
                   get_sentiment_route_ground_truth, _CONVERSATION_HISTORIES,
                   generate_ticket_dynamically)
-from graders import grade, grade_escalate, grade_sentiment_route, grade_clarify, grade_draft, grade_refine
+from graders import grade, grade_escalate, grade_sentiment_route, grade_clarify, grade_draft, grade_refine, _clamp_score
 
 
 _MAX_STEPS = {
@@ -177,7 +177,7 @@ class SupportTriageEnv:
                     ground_truth=self._ground_truth,
                     ticket_subject=ticket_subject,
                 )
-            reward_val = float(result["score"])
+            reward_val = _clamp_score(float(result["score"]))
             self._total_reward = round(self._total_reward + reward_val, 3)
             self._done = True
 
@@ -198,7 +198,7 @@ class SupportTriageEnv:
                     ground_truth=self._ground_truth,
                     ticket_subject=ticket_subject,
                 )
-                reward_val = float(result["score"])
+                reward_val = _clamp_score(float(result["score"]))
 
                 # Simulate customer reply
                 self._customer_answer = simulate_customer_reply(
@@ -222,7 +222,7 @@ class SupportTriageEnv:
                     ticket_subject=ticket_subject,
                     customer_answer=self._customer_answer,
                 )
-                reward_val = float(result["score"])
+                reward_val = _clamp_score(float(result["score"]))
 
                 from models import RespondStep3Observation
                 obs_data = RespondStep3Observation(
@@ -240,7 +240,7 @@ class SupportTriageEnv:
                     ticket_subject=ticket_subject,
                     draft_response=self._draft_response,
                 )
-                reward_val = float(result["score"])
+                reward_val = _clamp_score(float(result["score"]))
                 obs_data = self._current_obs.data
                 done = True
                 self._done = True
