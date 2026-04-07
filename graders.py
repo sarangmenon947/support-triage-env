@@ -38,10 +38,24 @@ _TEAM_FOR_CATEGORY = {
 }
 
 def _clamp_score(x: float, eps: float = 1e-3) -> float:
+    x = float(x)
+
+    # Handle NaN / weird values
+    if x != x:
+        return eps
+
+    # Strict clamp
     if x <= 0.0:
         return eps
     if x >= 1.0:
         return 1.0 - eps
+
+    # Extra safety against float rounding
+    if x < eps:
+        return eps
+    if x > 1.0 - eps:
+        return 1.0 - eps
+
     return x
 
 
@@ -70,7 +84,7 @@ def grade_classify(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) ->
         feedback = f"Wrong category. Expected '{correct}', got '{predicted}'."
 
     return {
-    "score": _clamp_score(round(score, 2)),
+    "score": round(_clamp_score(score), 3),
     "feedback": feedback,
     "breakdown": {"category_match": score}
     }
