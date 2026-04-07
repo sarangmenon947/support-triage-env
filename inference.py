@@ -1,7 +1,9 @@
 """
 Inference Script — Support Triage OpenEnv
 ==========================================
-Baseline agent that calls an LLM to solve all three tasks.
+Baseline agent that calls an LLM to solve all 5 tasks.
+Uses external tools (search_kb, lookup_customer, check_order_status, get_similar_tickets)
+during the respond task to demonstrate real tool-use capability.
 
 MANDATORY environment variables:
     API_BASE_URL      The API endpoint for the LLM.
@@ -207,8 +209,10 @@ def build_sentiment_route_prompt(obs_data: dict) -> str:
         '{"assigned_team": "<team>", "urgency_flag": "<urgency>", "de_escalation_note": "<brief calming message for customer>"}'
     )
 
-def call_llm(client: OpenAI, prompt: str) -> str:
-    """Call the LLM and return raw response text."""
+def call_llm(client: Optional[OpenAI], prompt: str) -> str:
+    """Call the LLM and return raw response text. Returns empty string if client unavailable."""
+    if client is None:
+        return ""
     try:
         completion = client.chat.completions.create(
             model=MODEL_NAME,
@@ -378,11 +382,33 @@ def run_task(client: OpenAI, task: str) -> float:
 # ─────────────────────────────────────────────
 
 def main():
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    # Validate required environment variables before starting
+    if not API_KEY:
+        print("[WARN] HF_TOKEN/API_KEY not set. LLM calls will fail. "
+              "Set HF_TOKEN environment variable.", flush=True)
+
+    # Use a placeholder key if none provided — lets environment
+    # calls proceed even if LLM calls fail gracefully
+    safe_api_key = API_KEY if API_KEY else "placeholder-no-key-set"
+
+    try:
+        client = OpenAI(base_url=API_BASE_URL, api_key=safe_api_key)
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize OpenAI client: {e}", flush=True)
+        # Still run tasks so [START]/[STEP]/[END] logs are emitted
+        client = None
 
     all_scores = {}
     for task in TASKS:
-        score = run_task(client, task)
+        try:
+            score = run_task(client, task)
+        except Exception as e:
+            print(f"[ERROR] Task '{task}' failed: {e}", flush=True)
+            score = 0.0
+            # Emit required log lines even on failure
+            log_start(task=task, model=MODEL_NAME)
+            log_step(step=1, action="{}", reward=0.0, done=True, error=str(e))
+            log_end(success=False, steps=1, score=0.0, rewards=[0.0])
         all_scores[task] = score
         print(f"[INFO] Task '{task}' score: {score:.3f}", flush=True)
 
