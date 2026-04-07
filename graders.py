@@ -1,7 +1,22 @@
+"""
+Graders for all 5 tasks in Support Triage OpenEnv.
+
+All graders are deterministic and return a score in [0.0, 1.0].
+All support partial credit — no binary pass/fail.
+
+Weighting rationale:
+  classify:        1.0 exact, 0.4 adjacent (billing/account are genuinely similar)
+  prioritize:      60% priority (harder, more consequential) + 40% team routing
+  escalate:        50% decision + 30% level + 20% reason (auditable)
+  sentiment_route: 40% team + 40% urgency + 20% de-escalation note
+  respond:         LLM-as-judge across 3 steps (clarify 0.3, draft 0.4, refine 0.3)
+"""
+
 from typing import Dict, Any
 
+
 # ─────────────────────────────────────────────
-#  Constants & Shared Logic
+#  Category adjacency map for partial credit
 # ─────────────────────────────────────────────
 
 _CATEGORY_NEIGHBORS: Dict[str, list] = {
@@ -13,156 +28,541 @@ _CATEGORY_NEIGHBORS: Dict[str, list] = {
 }
 
 _PRIORITY_RANK = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
-_ESCALATION_RANK = {"none": 0, "L1": 1, "L2": 2, "L3": 3, "manager": 4}
-_URGENCY_RANK = {"low": 0, "normal": 1, "high": 2, "critical": 3}
 
-def _clamp_score(x: Any, eps: float = 0.01) -> float:
-    """Strictly enforces (0, 1) range for all numerical outputs."""
+_TEAM_FOR_CATEGORY = {
+    "billing":         "billing_team",
+    "technical":       "tech_support",
+    "account":         "account_team",
+    "feature_request": "product_team",
+    "spam":            "spam_filter",
+}
+
+
+def _clamp_score(x: float, eps: float = 1e-3) -> float:
+    """Clamp score to strictly (0, 1) — never exactly 0.0 or 1.0."""
     try:
-        val = float(x)
-    except (ValueError, TypeError):
+        x = float(x)
+    except Exception:
         return eps
-    if val != val:  # NaN check
+    if x != x:  # NaN check
         return eps
-    # Hard clamp to [0.01, 0.99] to satisfy Phase 2
-    return max(eps, min(1.0 - eps, val))
+    return max(eps, min(1.0 - eps, x))
 
-def _safe_breakdown(d: Dict[str, float]) -> Dict[str, float]:
-    """Applies clamping to every key in a breakdown for total safety."""
-    return {k: _clamp_score(v) for k, v in d.items()}
 
 # ─────────────────────────────────────────────
-#  Task 1 — Classify
+#  Task 1 — classify
 # ─────────────────────────────────────────────
 
 def grade_classify(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) -> Dict[str, Any]:
-    pred = str(action_data.get("category", "")).strip().lower()
-    corr = ground_truth["category"].lower()
+    """
+    Score the classify action.
+    - 1.0 for exact match
+    - 0.4 for adjacent category (billing ↔ account)
+    - 0.0 otherwise
+    """
+    predicted = str(action_data.get("category", "")).strip().lower()
+    correct   = ground_truth["category"].lower()
 
-    if pred == corr:
+    if predicted == correct:
         score = 1.0
-        msg = "Correct category."
-    elif pred in _CATEGORY_NEIGHBORS.get(corr, []):
+        feedback = "Correct category."
+    elif predicted in _CATEGORY_NEIGHBORS.get(correct, []):
         score = 0.4
-        msg = f"Adjacent category. Expected '{corr}', got '{pred}'."
+        feedback = f"Adjacent category. Expected '{correct}', got '{predicted}'."
     else:
         score = 0.0
-        msg = f"Wrong category. Expected '{corr}', got '{pred}'."
-    
-    return {
-        "score": _clamp_score(score),
-        "feedback": msg,
-        "breakdown": _safe_breakdown({"category_match": score})
-    }
+        feedback = f"Wrong category. Expected '{correct}', got '{predicted}'."
+
+    return {"score": _clamp_score(round(score, 2)), "feedback": feedback,
+            "breakdown": {"category_match": score}}
+
 
 # ─────────────────────────────────────────────
-#  Task 2 — Prioritize
+#  Task 2 — prioritize
 # ─────────────────────────────────────────────
 
 def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) -> Dict[str, Any]:
-    pred_p = str(action_data.get("priority", "")).strip().upper()
-    pred_t = str(action_data.get("assigned_team", "")).strip().lower()
+    """
+    Score the prioritize action (60% priority, 40% team routing).
 
-    corr_p = ground_truth["priority"].upper()
-    corr_t = ground_truth["assigned_team"].lower()
+    Priority:
+      - Exact match = 1.0
+      - Off by 1 level = 0.5
+      - Off by 2+ = 0.0
 
-    p_diff = abs(_PRIORITY_RANK.get(pred_p, 99) - _PRIORITY_RANK.get(corr_p, 99))
-    p_score = 1.0 if p_diff == 0 else (0.5 if p_diff == 1 else 0.0)
-    t_score = 1.0 if pred_t == corr_t else 0.0
+    Team:
+      - Correct team = 1.0
+      - Wrong team = 0.0
+    """
+    pred_priority = str(action_data.get("priority", "")).strip().upper()
+    pred_team     = str(action_data.get("assigned_team", "")).strip().lower()
 
-    total = (0.6 * p_score) + (0.4 * t_score)
+    correct_priority = ground_truth["priority"].upper()
+    correct_team     = ground_truth["assigned_team"].lower()
+
+    # Priority score
+    pred_rank    = _PRIORITY_RANK.get(pred_priority, 99)
+    correct_rank = _PRIORITY_RANK.get(correct_priority, 99)
+    diff = abs(pred_rank - correct_rank)
+
+    if diff == 0:
+        priority_score = 1.0
+        pf = "Priority correct."
+    elif diff == 1:
+        priority_score = 0.5
+        pf = f"Priority off by 1. Expected {correct_priority}, got {pred_priority}."
+    else:
+        priority_score = 0.0
+        pf = f"Priority wrong. Expected {correct_priority}, got {pred_priority}."
+
+    # Team score
+    team_score = 1.0 if pred_team == correct_team else 0.0
+    tf = "Team correct." if team_score == 1.0 else f"Wrong team. Expected '{correct_team}', got '{pred_team}'."
+
+    # 60% priority: urgency judgment is harder and more consequential than routing
+    # 40% team routing: can often be inferred mechanically from category
+    total = round(0.6 * priority_score + 0.4 * team_score, 2)
+
     return {
         "score": _clamp_score(total),
-        "feedback": f"Priority Match: {'Exact' if p_diff==0 else 'Partial'}, Team Match: {pred_t == corr_t}",
-        "breakdown": _safe_breakdown({"priority": p_score, "team": t_score}),
+        "feedback": f"{pf} {tf}",
+        "breakdown": {"priority": priority_score, "team_routing": team_score},
     }
 
+
 # ─────────────────────────────────────────────
-#  Task 3 — Respond
+#  Task 3 — respond  (LLM-based grader with heuristic fallback)
 # ─────────────────────────────────────────────
 
-def grade_respond(action_data: Dict[str, Any], ground_truth: Dict[str, Any], **kwargs) -> Dict[str, Any]:
-    text = str(action_data.get("response_text", "")).lower()
-    
-    # 40% Issue Identification
-    issue_kws = ["issue", "problem", "error", "bug", "trouble", "unable", "failed", "help"]
-    issue_score = 1.0 if any(k in text for k in issue_kws) else 0.4
-    
-    # 30% Empathy & Tone
-    emp_kws = ["sorry", "understand", "apolog", "frustrat", "inconvenien", "appreciate"]
-    emp_score = 1.0 if any(w in text for w in emp_kws) else 0.0
-    
-    # 30% Clarity & Substance
-    word_count = len(text.split())
-    clar_score = 1.0 if word_count >= 40 else (0.5 if word_count >= 15 else 0.0)
-    
-    total = (0.4 * issue_score) + (0.3 * emp_score) + (0.3 * clar_score)
+import os
+import json as _json
+
+_EMPATHY_PHRASES = [
+    "understand", "sorry", "apologise", "apology", "frustrat", "inconvenien",
+    "appreciate", "thank you for", "we're here to help", "happy to help",
+]
+
+_CLOSING_PHRASES = [
+    "let me know", "feel free", "don't hesitate", "reach out", "any questions",
+    "here to help", "best regards", "kind regards", "sincerely",
+]
+
+_CATEGORY_KEYWORDS: Dict[str, list] = {
+    "billing":         ["invoice", "charge", "payment", "refund", "billing", "receipt"],
+    "technical":       ["error", "issue", "fix", "troubleshoot", "technical", "support", "problem"],
+    "account":         ["account", "password", "login", "access", "settings", "profile"],
+    "feature_request": ["feedback", "feature", "team", "future", "roadmap", "noted"],
+    "spam":            ["spam", "flag", "reported", "block", "review"],
+}
+
+_LLM_GRADE_PROMPT = """You are an expert customer support quality analyst.
+Score the following support response on four criteria.
+Each score must be a float between 0.0 and 1.0.
+
+TICKET SUBJECT: {subject}
+TICKET CATEGORY: {category}
+AGENT RESPONSE: {response}
+
+Score these four criteria:
+1. issue_acknowledged (0.0-1.0): Did the agent clearly identify and address the customer's specific issue?
+2. solution_quality (0.0-1.0): Did the agent provide a helpful, accurate, and actionable solution?
+3. empathy_tone (0.0-1.0): Was the tone empathetic, professional, and customer-friendly?
+4. clarity_brevity (0.0-1.0): Was the response clear, well-structured, and appropriately concise?
+
+Respond with valid JSON only, no markdown:
+{{"issue_acknowledged": 0.0, "solution_quality": 0.0, "empathy_tone": 0.0, "clarity_brevity": 0.0, "reasoning": "brief explanation"}}"""
+
+
+def _heuristic_respond(text: str, category: str) -> Dict[str, Any]:
+    """Fallback heuristic grader used when LLM grader is unavailable."""
+    words = text.lower().split()
+    kws = _CATEGORY_KEYWORDS.get(category, [])
+    issue_score = 1.0 if any(kw in text.lower() for kw in kws) else 0.0
+    if len(words) >= 80:
+        solution_score = 1.0
+    elif len(words) >= 50:
+        solution_score = 0.6
+    elif len(words) >= 20:
+        solution_score = 0.3
+    else:
+        solution_score = 0.0
+    empathy_score = 1.0 if any(p in text.lower() for p in _EMPATHY_PHRASES) else 0.0
+    closing_score = 1.0 if any(p in text.lower() for p in _CLOSING_PHRASES) else 0.0
+    total = round(0.25 * issue_score + 0.25 * solution_score + 0.25 * empathy_score + 0.25 * closing_score, 2)
     return {
         "score": _clamp_score(total),
-        "feedback": "Response graded on keyword presence and length heuristics.",
-        "breakdown": _safe_breakdown({"issue": issue_score, "empathy": emp_score, "clarity": clar_score}),
+        "feedback": f"heuristic; issue={'✓' if issue_score else '✗'} solution={'✓' if solution_score>=1 else '~'} empathy={'✓' if empathy_score else '✗'} closing={'✓' if closing_score else '✗'}",
+        "breakdown": {"issue_acknowledged": issue_score, "solution_quality": solution_score, "empathy_tone": empathy_score, "clarity_brevity": closing_score},
     }
 
+
+def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict[str, Any]:
+    """LLM-based grader — calls the same API used by inference.py."""
+    try:
+        from openai import OpenAI
+        api_key      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+        api_base_url = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+        model_name   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
+
+        if not api_key:
+            return None  # no key available, fall back to heuristic
+
+        client = OpenAI(base_url=api_base_url, api_key=api_key)
+        prompt = _LLM_GRADE_PROMPT.format(
+            subject=ticket_subject,
+            category=category,
+            response=response_text,
+        )
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You are a support quality analyst. Always respond with valid JSON only."},
+                {"role": "user",   "content": prompt},
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+        raw = (completion.choices[0].message.content or "").strip()
+        # strip markdown fences if present
+        if raw.startswith("```"):
+            raw = "\n".join(l for l in raw.splitlines() if not l.startswith("```")).strip()
+        scores = _json.loads(raw)
+
+        issue    = float(scores.get("issue_acknowledged", 0.0))
+        solution = float(scores.get("solution_quality",   0.0))
+        empathy  = float(scores.get("empathy_tone",       0.0))
+        clarity  = float(scores.get("clarity_brevity",    0.0))
+        reasoning = scores.get("reasoning", "")
+
+        # clamp all to [0,1]
+        issue, solution, empathy, clarity = (
+            max(0.0, min(1.0, v)) for v in (issue, solution, empathy, clarity)
+        )
+        total = round(0.25 * issue + 0.25 * solution + 0.25 * empathy + 0.25 * clarity, 2)
+
+        return {
+            "score": _clamp_score(total),
+            "feedback": f"llm_graded; {reasoning}",
+            "breakdown": {
+                "issue_acknowledged": issue,
+                "solution_quality":   solution,
+                "empathy_tone":       empathy,
+                "clarity_brevity":    clarity,
+            },
+        }
+    except Exception as e:
+        return None  # fall back to heuristic on any error
+
+
+def grade_respond(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+) -> Dict[str, Any]:
+    """
+    LLM-based rubric grader for the respond task.
+    Uses an LLM to score four criteria (25% each):
+      1. Issue acknowledged  — agent identified the customer's problem
+      2. Solution quality    — helpful and actionable solution provided
+      3. Empathy/tone        — professional and empathetic tone
+      4. Clarity/brevity     — clear, well-structured, concise response
+
+    Falls back to heuristic grader if LLM is unavailable.
+    """
+    response_text = str(action_data.get("response_text", ""))
+    category      = ground_truth["category"]
+
+    # Try LLM grader first
+    result = _llm_respond(response_text, category, ticket_subject)
+
+    # Fall back to heuristic if LLM unavailable
+    if result is None:
+        result = _heuristic_respond(response_text, category)
+
+    return result
+
+
 # ─────────────────────────────────────────────
-#  Task 4 — Escalate
+#  Unified grading entry point
 # ─────────────────────────────────────────────
 
-def grade_escalate(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) -> Dict[str, Any]:
-    pred_esc = bool(action_data.get("should_escalate", False))
-    corr_esc = bool(ground_truth.get("should_escalate", False))
-    
-    dec_score = 0.5 if pred_esc == corr_esc else 0.0
-    
-    p_rank = _ESCALATION_RANK.get(str(action_data.get("escalation_level", "none")).lower(), 0)
-    c_rank = _ESCALATION_RANK.get(str(ground_truth.get("escalation_level", "none")).lower(), 0)
-    lev_score = 0.3 if p_rank == c_rank else (0.15 if abs(p_rank - c_rank) == 1 else 0.0)
-    
-    reason_len = len(str(action_data.get("reason", "")))
-    re_score = 0.2 if reason_len >= 15 else (0.1 if reason_len >= 5 else 0.0)
-
-    return {
-        "score": _clamp_score(dec_score + lev_score + re_score),
-        "feedback": f"Escalation Decision Match: {pred_esc == corr_esc}",
-        "breakdown": _safe_breakdown({"decision": dec_score, "level": lev_score, "reason": re_score}),
-    }
-
-# ─────────────────────────────────────────────
-#  Task 5 — Sentiment Route
-# ─────────────────────────────────────────────
-
-def grade_sentiment_route(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) -> Dict[str, Any]:
-    # Team (40%)
-    t_match = str(action_data.get("assigned_team", "")).lower() == str(ground_truth.get("assigned_team", "")).lower()
-    t_score = 0.4 if t_match else 0.0
-    
-    # Urgency (40%)
-    pred_u = str(action_data.get("urgency_flag", "")).lower()
-    corr_u = str(ground_truth.get("urgency_flag", "normal")).lower()
-    u_diff = abs(_URGENCY_RANK.get(pred_u, 1) - _URGENCY_RANK.get(corr_u, 1))
-    u_score = 0.4 if u_diff == 0 else (0.2 if u_diff == 1 else 0.0)
-    
-    # Note (20%)
-    n_len = len(str(action_data.get("de_escalation_note", "")))
-    n_score = 0.2 if n_len >= 15 else (0.1 if n_len >= 5 else 0.0)
-
-    return {
-        "score": _clamp_score(t_score + u_score + n_score),
-        "feedback": f"Team match: {t_match}, Urgency accuracy: {'High' if u_diff==0 else 'Low'}",
-        "breakdown": _safe_breakdown({"team": t_score, "urgency": u_score, "note": n_score}),
-    }
-
-# ─────────────────────────────────────────────
-#  Unified Entry Point
-# ─────────────────────────────────────────────
-
-def grade(task, action_data, ground_truth, **kwargs):
-    tasks = {
-        "classify": grade_classify,
-        "prioritize": grade_prioritize,
-        "respond": grade_respond,
-        "escalate": grade_escalate,
-        "sentiment_route": grade_sentiment_route
-    }
-    if task not in tasks:
+def grade(task: str, action_data: Dict[str, Any], ground_truth: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    if task == "classify":
+        return grade_classify(action_data, ground_truth)
+    elif task == "prioritize":
+        return grade_prioritize(action_data, ground_truth)
+    elif task == "respond":
+        return grade_respond(action_data, ground_truth, **kwargs)
+    else:
         raise ValueError(f"Unknown task: {task}")
-    return tasks[task](action_data, ground_truth, **kwargs)
+
+
+# ─────────────────────────────────────────────
+#  Multi-step respond graders
+# ─────────────────────────────────────────────
+
+_QUESTION_INDICATORS = [
+    "?", "what", "when", "where", "which", "who", "how", "could you",
+    "can you", "did you", "have you", "please clarify", "please provide",
+    "could you tell", "would you mind",
+]
+
+_CATEGORY_QUESTION_KEYWORDS: dict = {
+    "billing":         ["charge", "invoice", "payment", "amount", "date", "receipt", "refund"],
+    "technical":       ["error", "message", "browser", "device", "version", "steps", "when"],
+    "account":         ["email", "username", "access", "role", "when", "browser", "device"],
+    "feature_request": ["team", "use case", "how often", "workflow", "currently", "benefit"],
+    "spam":            ["intentional", "account", "verify", "sent", "who"],
+}
+
+
+def grade_clarify(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 1: Did the agent ask a good clarifying question?
+    Max reward: 0.3
+
+    Criteria:
+    - Is it actually a question? (0.15)
+    - Is it relevant to the ticket category? (0.15)
+    """
+    question = str(action_data.get("clarifying_question", "")).lower().strip()
+    category = ground_truth.get("category", "")
+
+    # Is it a question?
+    is_question = any(ind in question for ind in _QUESTION_INDICATORS)
+    question_score = 0.15 if is_question else 0.0
+
+    # Is it relevant?
+    kws = _CATEGORY_QUESTION_KEYWORDS.get(category, [])
+    is_relevant = any(kw in question for kw in kws)
+    relevance_score = 0.15 if is_relevant else 0.0
+
+    total = round(question_score + relevance_score, 2)
+    feedback = f"clarify: is_question={'Y' if is_question else 'N'} relevant={'Y' if is_relevant else 'N'}"
+
+    return {
+        "score": _clamp_score(total),
+        "feedback": feedback,
+        "breakdown": {"is_question": question_score, "relevance": relevance_score},
+    }
+
+
+def grade_draft(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+    customer_answer: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 2: Did the agent write a good draft response?
+    Max reward: 0.4
+
+    Criteria:
+    - Addresses the customer answer (0.1)
+    - Contains solution attempt (0.15)
+    - Has empathetic tone (0.15)
+    """
+    draft = str(action_data.get("draft_response", "")).lower().strip()
+    category = ground_truth.get("category", "")
+    words = draft.split()
+
+    # Addresses customer answer
+    answer_words = set(customer_answer.lower().split())
+    draft_words  = set(draft.split())
+    overlap = len(answer_words & draft_words)
+    address_score = 0.1 if overlap >= 3 else (0.05 if overlap >= 1 else 0.0)
+
+    # Solution attempt (length + category keywords)
+    kws = _CATEGORY_KEYWORDS.get(category, [])
+    has_kw = any(kw in draft for kw in kws)
+    has_length = len(words) >= 30
+    solution_score = 0.15 if (has_kw and has_length) else (0.08 if has_length else 0.0)
+
+    # Empathy
+    empathy_score = 0.1 if any(p in draft for p in _EMPATHY_PHRASES) else 0.0
+
+    total = round(address_score + solution_score + empathy_score, 2)
+    # cap at 0.4
+    total = min(total, 0.4)
+
+    feedback = f"draft: addresses_reply={'Y' if address_score>0 else 'N'} solution={'Y' if solution_score>0 else 'N'} empathy={'Y' if empathy_score>0 else 'N'}"
+
+    return {
+        "score": _clamp_score(total),
+        "feedback": feedback,
+        "breakdown": {
+            "addresses_reply": address_score,
+            "solution_attempt": solution_score,
+            "empathy": empathy_score,
+        },
+    }
+
+
+def grade_refine(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+    ticket_subject: str = "",
+    draft_response: str = "",
+) -> Dict[str, Any]:
+    """
+    Grade Step 3: Did the agent improve the draft using KB articles?
+    Max reward: 0.3
+
+    Criteria:
+    - Response is longer/better than draft (0.1)
+    - Uses KB-specific information (0.1)
+    - Has proper closing (0.1)
+    """
+    final = str(action_data.get("response_text", "")).lower().strip()
+    draft = draft_response.lower().strip()
+
+    # Improvement over draft
+    improvement_score = 0.1 if len(final.split()) > len(draft.split()) + 5 else (
+        0.05 if len(final.split()) >= len(draft.split()) else 0.0
+    )
+
+    # KB-specific keywords (step names, article-specific terms)
+    kb_terms = [
+        "settings", "navigate", "click", "go to", "follow", "steps",
+        "documentation", "refer to", "knowledge base", "article",
+        "instructions", "guide", "process", "procedure",
+    ]
+    kb_score = 0.1 if any(term in final for term in kb_terms) else 0.0
+
+    # Proper closing
+    closing_score = 0.1 if any(p in final for p in _CLOSING_PHRASES) else 0.0
+
+    total = round(improvement_score + kb_score + closing_score, 2)
+    total = min(total, 0.3)
+
+    feedback = f"refine: improved={'Y' if improvement_score>0 else 'N'} kb_used={'Y' if kb_score>0 else 'N'} closing={'Y' if closing_score>0 else 'N'}"
+
+    return {
+        "score": _clamp_score(total),
+        "feedback": feedback,
+        "breakdown": {
+            "improvement": improvement_score,
+            "kb_used": kb_score,
+            "closing": closing_score,
+        },
+    }
+
+
+# ─────────────────────────────────────────────
+#  Task 4 — escalate grader
+# ─────────────────────────────────────────────
+
+_ESCALATION_RANK = {"none": 0, "L1": 1, "L2": 2, "L3": 3, "manager": 4}
+
+
+def grade_escalate(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Grade the escalate task.
+    - 50%: correct escalation decision (yes/no)
+    - 30%: correct escalation level (off-by-one = partial)
+    - 20%: reason provided (non-empty)
+    """
+    pred_escalate = bool(action_data.get("should_escalate", False))
+    pred_level    = str(action_data.get("escalation_level", "none")).strip().lower()
+    pred_reason   = str(action_data.get("reason", "")).strip()
+
+    correct_escalate = ground_truth.get("should_escalate", False)
+    correct_level    = ground_truth.get("escalation_level", "none").lower()
+
+    # Decision score (50%)
+    decision_score = 0.5 if pred_escalate == correct_escalate else 0.0
+
+    # Level score (30%)
+    pred_rank    = _ESCALATION_RANK.get(pred_level, 0)
+    correct_rank = _ESCALATION_RANK.get(correct_level, 0)
+    diff = abs(pred_rank - correct_rank)
+    if diff == 0:
+        level_score = 0.3
+    elif diff == 1:
+        level_score = 0.15
+    else:
+        level_score = 0.0
+
+    # Reason score (20%)
+    reason_score = 0.2 if len(pred_reason) >= 10 else (0.1 if pred_reason else 0.0)
+
+    total = round(decision_score + level_score + reason_score, 2)
+    feedback = (
+        f"escalate: decision={'Y' if decision_score else 'N'} "
+        f"level={'exact' if diff==0 else ('close' if diff==1 else 'wrong')} "
+        f"reason={'Y' if reason_score>=0.2 else 'N'}"
+    )
+
+    return {
+        "score": _clamp_score(total),
+        "feedback": feedback,
+        "breakdown": {
+            "decision": decision_score,
+            "level": level_score,
+            "reason": reason_score,
+        },
+    }
+
+
+# ─────────────────────────────────────────────
+#  Task 5 — sentiment_route grader
+# ─────────────────────────────────────────────
+
+def grade_sentiment_route(
+    action_data: Dict[str, Any],
+    ground_truth: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Grade the sentiment_route task.
+    - 40%: correct team assignment
+    - 40%: correct urgency flag (off-by-one = partial)
+    - 20%: de-escalation note present and non-trivial
+    """
+    pred_team    = str(action_data.get("assigned_team", "")).strip().lower()
+    pred_urgency = str(action_data.get("urgency_flag", "")).strip().lower()
+    pred_note    = str(action_data.get("de_escalation_note", "")).strip()
+
+    correct_team    = ground_truth.get("assigned_team", "").lower()
+    correct_urgency = ground_truth.get("urgency_flag", "normal").lower()
+
+    # Team score (40%)
+    team_score = 0.4 if pred_team == correct_team else 0.0
+
+    # Urgency score (40%)
+    _urgency_rank = {"low": 0, "normal": 1, "high": 2, "critical": 3}
+    pred_rank    = _urgency_rank.get(pred_urgency, 1)
+    correct_rank = _urgency_rank.get(correct_urgency, 1)
+    diff = abs(pred_rank - correct_rank)
+    if diff == 0:
+        urgency_score = 0.4
+    elif diff == 1:
+        urgency_score = 0.2
+    else:
+        urgency_score = 0.0
+
+    # De-escalation note (20%)
+    note_score = 0.2 if len(pred_note) >= 15 else (0.1 if pred_note else 0.0)
+
+    total = round(team_score + urgency_score + note_score, 2)
+    feedback = (
+        f"sentiment_route: team={'Y' if team_score else 'N'} "
+        f"urgency={'exact' if diff==0 else ('close' if diff==1 else 'wrong')} "
+        f"note={'Y' if note_score>=0.2 else 'N'}"
+    )
+
+    return {
+        "score": _clamp_score(total),
+        "feedback": feedback,
+        "breakdown": {
+            "team": team_score,
+            "urgency": urgency_score,
+            "de_escalation_note": note_score,
+        },
+    }
