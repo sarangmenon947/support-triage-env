@@ -37,6 +37,13 @@ _TEAM_FOR_CATEGORY = {
     "spam":            "spam_filter",
 }
 
+def _clamp_score(x: float, eps: float = 1e-3) -> float:
+    if x <= 0.0:
+        return eps
+    if x >= 1.0:
+        return 1.0 - eps
+    return x
+
 
 # ─────────────────────────────────────────────
 #  Task 1 — classify
@@ -62,8 +69,11 @@ def grade_classify(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) ->
         score = 0.0
         feedback = f"Wrong category. Expected '{correct}', got '{predicted}'."
 
-    return {"score": round(score, 2), "feedback": feedback,
-            "breakdown": {"category_match": score}}
+    return {
+    "score": _clamp_score(round(score, 2)),
+    "feedback": feedback,
+    "breakdown": {"category_match": score}
+    }
 
 
 # ─────────────────────────────────────────────
@@ -111,11 +121,11 @@ def grade_prioritize(action_data: Dict[str, Any], ground_truth: Dict[str, Any]) 
     # 60% priority: urgency judgment is harder and more consequential than routing
     # 40% team routing: can often be inferred mechanically from category
     total = round(0.6 * priority_score + 0.4 * team_score, 2)
-
+    
     return {
-        "score": total,
-        "feedback": f"{pf} {tf}",
-        "breakdown": {"priority": priority_score, "team_routing": team_score},
+    "score": _clamp_score(total),
+    "feedback": f"{pf} {tf}",
+    "breakdown": {"priority": priority_score, "team_routing": team_score},
     }
 
 
@@ -179,7 +189,7 @@ def _heuristic_respond(text: str, category: str) -> Dict[str, Any]:
     closing_score = 1.0 if any(p in text.lower() for p in _CLOSING_PHRASES) else 0.0
     total = round(0.25 * issue_score + 0.25 * solution_score + 0.25 * empathy_score + 0.25 * closing_score, 2)
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": f"heuristic; issue={'✓' if issue_score else '✗'} solution={'✓' if solution_score>=1 else '~'} empathy={'✓' if empathy_score else '✗'} closing={'✓' if closing_score else '✗'}",
         "breakdown": {"issue_acknowledged": issue_score, "solution_quality": solution_score, "empathy_tone": empathy_score, "clarity_brevity": closing_score},
     }
@@ -230,7 +240,7 @@ def _llm_respond(response_text: str, category: str, ticket_subject: str) -> Dict
         total = round(0.25 * issue + 0.25 * solution + 0.25 * empathy + 0.25 * clarity, 2)
 
         return {
-            "score": total,
+            "score": _clamp_score(total),
             "feedback": f"llm_graded; {reasoning}",
             "breakdown": {
                 "issue_acknowledged": issue,
@@ -275,13 +285,22 @@ def grade_respond(
 #  Unified grading entry point
 # ─────────────────────────────────────────────
 
-def grade(task: str, action_data: Dict[str, Any], ground_truth: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+def grade(task, action_data, ground_truth, **kwargs):
     if task == "classify":
         return grade_classify(action_data, ground_truth)
+
     elif task == "prioritize":
         return grade_prioritize(action_data, ground_truth)
+
     elif task == "respond":
         return grade_respond(action_data, ground_truth, **kwargs)
+
+    elif task == "escalate":
+        return grade_escalate(action_data, ground_truth)
+
+    elif task == "sentiment_route":
+        return grade_sentiment_route(action_data, ground_truth)
+
     else:
         raise ValueError(f"Unknown task: {task}")
 
@@ -334,7 +353,7 @@ def grade_clarify(
     feedback = f"clarify: is_question={'Y' if is_question else 'N'} relevant={'Y' if is_relevant else 'N'}"
 
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": feedback,
         "breakdown": {"is_question": question_score, "relevance": relevance_score},
     }
@@ -381,7 +400,7 @@ def grade_draft(
     feedback = f"draft: addresses_reply={'Y' if address_score>0 else 'N'} solution={'Y' if solution_score>0 else 'N'} empathy={'Y' if empathy_score>0 else 'N'}"
 
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": feedback,
         "breakdown": {
             "addresses_reply": address_score,
@@ -431,7 +450,7 @@ def grade_refine(
     feedback = f"refine: improved={'Y' if improvement_score>0 else 'N'} kb_used={'Y' if kb_score>0 else 'N'} closing={'Y' if closing_score>0 else 'N'}"
 
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": feedback,
         "breakdown": {
             "improvement": improvement_score,
@@ -490,7 +509,7 @@ def grade_escalate(
     )
 
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": feedback,
         "breakdown": {
             "decision": decision_score,
@@ -547,7 +566,7 @@ def grade_sentiment_route(
     )
 
     return {
-        "score": total,
+        "score": _clamp_score(total),
         "feedback": feedback,
         "breakdown": {
             "team": team_score,
