@@ -621,32 +621,6 @@ def grade(task: str, action_data: Dict[str, Any], ground_truth: Dict[str, Any], 
         return grade_respond(action_data, ground_truth, **kwargs)
     else:
         raise ValueError(f"Unknown task: {task}")
-
-
-def grade_refine(
-    action_data: Dict[str, Any],
-    ground_truth: Dict[str, Any],
-    ticket_subject: str = "",
-    draft_response: str = "",
-) -> Dict[str, Any]:
-    """
-    Grade Step 3: Did the agent improve the draft using KB articles?
-    Max reward: 0.3
-
-    Criteria:
-    - Response is longer/better than draft (0.1)
-    - Uses KB-specific information (0.1)
-    - Has proper closing (0.1)
-    """
-    final = str(action_data.get("response_text", "")).lower().strip()
-    draft = draft_response.lower().strip()
-
-    # Improvement over draft
-    improvement_score = 0.1 if len(final.split()) > len(draft.split()) + 5 else (
-        0.05 if len(final.split()) >= len(draft.split()) else 0.0
-    )
-
-    # KB-specific keywords (step names, article-specific terms)
     kb_terms = [
         "settings", "navigate", "click", "go to", "follow", "steps",
         "documentation", "refer to", "knowledge base", "article",
