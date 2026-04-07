@@ -50,6 +50,17 @@ BENCHMARK = "support_triage"
 TASKS = ["classify", "prioritize", "escalate", "sentiment_route", "respond"]
 SUCCESS_THRESHOLD = 0.5      # score >= 0.5 counts as success
 
+
+def _strict_score(x: float, eps: float = 1e-3) -> float:
+    """Keep task scores strictly within (0, 1) for validator compatibility."""
+    try:
+        x = float(x)
+    except Exception:
+        return eps
+    if x != x:  # NaN
+        return eps
+    return max(eps, min(1.0 - eps, x))
+
 # ─────────────────────────────────────────────
 #  Logging helpers  (exact required format)
 # ─────────────────────────────────────────────
@@ -363,6 +374,7 @@ def run_task(client: OpenAI, task: str) -> float:
 
             score = sum(rewards)
 
+        score = _strict_score(score)
         success = score >= SUCCESS_THRESHOLD
 
     except Exception as e:
@@ -374,7 +386,7 @@ def run_task(client: OpenAI, task: str) -> float:
         log_end(success=success, steps=steps_taken, score=score,
                 rewards=rewards if rewards else [0.0])
 
-    return score
+    return _strict_score(score)
 
 
 # ─────────────────────────────────────────────
