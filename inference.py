@@ -379,12 +379,13 @@ def run_task(client: OpenAI, task: str) -> float:
 
     except Exception as e:
         error_msg = str(e)
-        log_step(step=max(steps_taken, 1), action="{}", reward=0.0,
+        score = _strict_score(0.0)
+        log_step(step=max(steps_taken, 1), action="{}", reward=_strict_score(0.0),
                  done=True, error=error_msg)
 
     finally:
         log_end(success=success, steps=steps_taken, score=score,
-                rewards=rewards if rewards else [0.0])
+                rewards=rewards if rewards else [_strict_score(0.0)])
 
     return _strict_score(score)
 
@@ -416,11 +417,10 @@ def main():
             score = run_task(client, task)
         except Exception as e:
             print(f"[ERROR] Task '{task}' failed: {e}", flush=True)
-            score = 0.0
-            # Emit required log lines even on failure
+            score = _strict_score(0.0)
             log_start(task=task, model=MODEL_NAME)
-            log_step(step=1, action="{}", reward=0.0, done=True, error=str(e))
-            log_end(success=False, steps=1, score=0.0, rewards=[0.0])
+            log_step(step=1, action="{}", reward=_strict_score(0.0), done=True, error=str(e))
+            log_end(success=False, steps=1, score=_strict_score(0.0), rewards=[_strict_score(0.0)])
         all_scores[task] = score
         print(f"[INFO] Task '{task}' score: {score:.3f}", flush=True)
 
